@@ -9,24 +9,20 @@ local clientPlayer = playersService.LocalPlayer
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
 local Window = nil
-pcall(function()
-    Window = WindUI:CreateWindow({
-        Title = "femboysakenstab ✨", Icon = "heart",
-        Author = "by the lovesaken team", Folder = "lovesaken",
-        Size = UDim2.fromOffset(650, 560),
-        Transparent = true, Resizable = true, Theme = "Dark",
-        SideBarWidth = 200, HideSearchBar = false,
-    })
-end)
-pcall(function()
-    Window:EditOpenButton({
-        Title = "femboysakenstab", Icon = "sparkles",
-        CornerRadius = UDim.new(0, 20), StrokeThickness = 2,
-        Color = ColorSequence.new(Color3.fromHex("#A78BFA"), Color3.fromHex("#EC4899")),
-        Enabled = true, Draggable = true,
-    })
-end)
-pcall(function() Window:Tag({ Title = "Stab Tech", Color = Color3.fromHex("#A78BFA"), Radius = 15 }) end)
+Window = WindUI:CreateWindow({
+    Title = "femboysakenstab ✨", Icon = "heart",
+    Author = "by the lovesaken team", Folder = "lovesaken",
+    Size = UDim2.fromOffset(650, 560),
+    Transparent = true, Resizable = true, Theme = "Dark",
+    SideBarWidth = 200, HideSearchBar = false,
+})
+Window:EditOpenButton({
+    Title = "femboysakenstab", Icon = "sparkles",
+    CornerRadius = UDim.new(0, 20), StrokeThickness = 2,
+    Color = ColorSequence.new(Color3.fromHex("#A78BFA"), Color3.fromHex("#EC4899")),
+    Enabled = true, Draggable = true,
+})
+Window:Tag({ Title = "Stab Tech", Color = Color3.fromHex("#A78BFA"), Radius = 15 })
 
 
 
@@ -82,11 +78,9 @@ local pingLabel       = nil
 local autoPingEnabled = true
 
 local function measurePing()
-    local ok, ping = pcall(function()
-        return statsService.Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
+    local ok, ping = return statsService.Network.ServerStatsItem["Data Ping"]:GetValue()
     if ok and type(ping) == "number" and ping > 0 then return ping end
-    local ok2, ping2 = pcall(function() return clientPlayer:GetNetworkPing() * 1000 end)
+    local ok2, ping2 = return clientPlayer:GetNetworkPing() * 1000
     if ok2 and type(ping2) == "number" and ping2 > 0 then return ping2 end
     return nil
 end
@@ -101,9 +95,7 @@ task.spawn(function()
             local pingSec = math.clamp(ping / 1000, 0.01, 0.40)
             DASH_FLIP_DELAY = SERVER_WINDUP + pingSec
             if pingLabel then
-                pcall(function()
-                    pingLabel:SetDescription(string.format("Ping: %dms  |  Flip Delay: %.3fs", math.floor(ping), DASH_FLIP_DELAY))
-                end)
+                pingLabel:SetDescription(string.format("Ping: %dms  |  Flip Delay: %.3fs", math.floor(ping), DASH_FLIP_DELAY))
             end
         end
     end
@@ -131,7 +123,7 @@ end
 
 local function fireCrouchRemote(remoteName)
     local remote = getForsakenRemote()
-    if remote then pcall(function() remote:FireServer(remoteName) end) end
+    if remote then remote:FireServer(remoteName) end
 end
 
 task.spawn(function()
@@ -204,7 +196,7 @@ end
 
 local function tryActivateButton(btn)
     if not btn then return false end
-    pcall(function() if btn.Activate then btn:Activate() end end)
+    if btn.Activate then btn:Activate() end
     local ok, conns = pcall(function()
         if type(getconnections) == "function" and btn.MouseButton1Click then
             return getconnections(btn.MouseButton1Click)
@@ -213,27 +205,25 @@ local function tryActivateButton(btn)
     end)
     if ok and conns then
         for _, conn in ipairs(conns) do
-            pcall(function()
-                if conn.Function then conn.Function()
-                elseif conn.func then conn.func()
-                elseif conn.Fire then conn.Fire() end
-            end)
+            if conn.Function then conn.Function()
+            elseif conn.func then conn.func()
+            elseif conn.Fire then conn.Fire() end
         end
     end
-    pcall(function() if btn.Activated then btn.Activated:Fire() end end)
+    if btn.Activated then btn.Activated:Fire() end
     return true
 end
 
 local function setAutoRotate(value)
     local char = clientPlayer.Character; if not char then return end
     local hum = char:FindFirstChildWhichIsA("Humanoid")
-    if hum then pcall(function() hum.AutoRotate = value end) end
+    if hum then hum.AutoRotate = value end
 end
 
 local function bumpTriggerCount()
     totalTriggers += 1
     if triggerLabel then
-        pcall(function() triggerLabel:SetDescription("Fires this session: " .. totalTriggers) end)
+        triggerLabel:SetDescription("Fires this session: " .. totalTriggers)
     end
 end
 
@@ -245,7 +235,7 @@ local function aimAtKiller(killerModel, duration)
     local khrp = killerModel:FindFirstChild("HumanoidRootPart")
     if not hum or not hrp or not khrp then return end
     aimRefCount += 1
-    if aimRefCount == 1 then pcall(function() hum.AutoRotate = false end) end
+    if aimRefCount == 1 then hum.AutoRotate = false end
     local function finish()
         aimRefCount = math.max(0, aimRefCount - 1)
         if aimRefCount == 0 then setAutoRotate(true) end
@@ -306,14 +296,14 @@ local function getOrCreateRadiusPart(killer)
     radiusParts[killer] = part
     killer.AncestryChanged:Connect(function()
         if not killer:IsDescendantOf(workspaceService) then
-            pcall(function() part:Destroy() end); radiusParts[killer] = nil
+            part:Destroy(); radiusParts[killer] = nil
         end
     end)
     return part
 end
 
 local function destroyAllRadiusParts()
-    for _, part in pairs(radiusParts) do pcall(function() part:Destroy() end) end
+    for _, part in pairs(radiusParts) do part:Destroy() end
     radiusParts = {}
 end
 
@@ -343,26 +333,22 @@ local hbIter = 0
 local _lastPingSample = 0
 
 RunService.Heartbeat:Connect(function()
-    pcall(function()
-        hbIter = hbIter + 1
-        local now = tick()
+    hbIter = hbIter + 1
+    local now = tick()
 
-        -- PING CALIBRATION (every 2s)
-        if autoPingEnabled and (now - _lastPingSample) >= 2 then
-            _lastPingSample = now
-            task.spawn(function()
-                local ping = measurePing()
-                if ping then
-                    measuredPingMs = ping
-                    local pingSec = math.clamp(ping / 1000, 0.01, 0.40)
-                    DASH_FLIP_DELAY = SERVER_WINDUP + pingSec
-                    if pingLabel then
-                        pcall(function()
-                            pingLabel:SetDescription(string.format("Ping: %dms  |  Flip Delay: %.3fs", math.floor(ping), DASH_FLIP_DELAY))
-                        end)
-                    end
+    -- PING CALIBRATION (every 2s)
+    if autoPingEnabled and (now - _lastPingSample) >= 2 then
+        _lastPingSample = now
+        task.spawn(function()
+            local ping = measurePing()
+            if ping then
+                measuredPingMs = ping
+                local pingSec = math.clamp(ping / 1000, 0.01, 0.40)
+                DASH_FLIP_DELAY = SERVER_WINDUP + pingSec
+                if pingLabel then
+                    pingLabel:SetDescription(string.format("Ping: %dms  |  Flip Delay: %.3fs", math.floor(ping), DASH_FLIP_DELAY))
                 end
-            end)
+            end
         end
 
         -- AUTO CROUCH (every 6 frames ≈ 0.1s)
@@ -370,19 +356,15 @@ RunService.Heartbeat:Connect(function()
         -- Backup plain FireServer if Crouching attribute not set after primary.
         -- This also satisfies the Dash-Stab Tech crouching gate below.
         if autoCrouchEnabled and hbIter % 6 == 0 then
-            pcall(function()
-                local remote = getForsakenRemote()
-                if remote then remote:FireServer("UseActorAbility", {[1] = "Crouch"}) end
-            end)
+            local remote = getForsakenRemote()
+            if remote then remote:FireServer("UseActorAbility", {[1] = "Crouch"}) end
         end
         if autoCrouchEnabled and hbIter % 12 == 0 then
-            pcall(function()
-                local char = clientPlayer.Character
-                if char and char:GetAttribute("Crouching") ~= true then
-                    local remote = getForsakenRemote()
-                    if remote then remote:FireServer("Crouch") end
-                end
-            end)
+            local char = clientPlayer.Character
+            if char and char:GetAttribute("Crouching") ~= true then
+                local remote = getForsakenRemote()
+                if remote then remote:FireServer("Crouch") end
+            end
         end
 
         -- MAIN DETECTION (only when enabled)
@@ -407,7 +389,7 @@ RunService.Heartbeat:Connect(function()
             if detectionRangeSlider and effectiveRange ~= lastDisplayedRange then
                 lastDisplayedRange = effectiveRange
                 suppressCallback = true
-                pcall(function() detectionRangeSlider:SetValue(effectiveRange) end)
+                detectionRangeSlider:SetValue(effectiveRange)
                 suppressCallback = false
             end
 

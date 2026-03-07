@@ -8,33 +8,25 @@ local clientPlayer = playersService.LocalPlayer
 
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
-local Window = WindUI:CreateWindow({
-    Title            = "femboysakenstab ✨",
-    Icon             = "heart",
-    Author           = "by the lovesaken team",
-    Folder           = "lovesaken",
-    Size             = UDim2.fromOffset(650, 560),
-    Transparent      = true,
-    Theme            = "Rose",
-    Resizable        = true,
-    SideBarWidth     = 200,
-    HideSearchBar    = false,
-    ScrollBarEnabled = false,
-})
-Window:SetToggleKey(Enum.KeyCode.K)
-WindUI:SetFont("rbxasset://fonts/families/AccanthisADFStd.json")
-
-Window:EditOpenButton({
-    Title           = "femboysakenstab",
-    Icon            = "heart",
-    CornerRadius    = UDim.new(0, 20),
-    StrokeThickness = 2,
-    Color           = ColorSequence.new(Color3.fromHex("#A78BFA"), Color3.fromHex("#EC4899")),
-    OnlyMobile      = true,
-    Enabled         = true,
-    Draggable       = true,
-})
-pcall(function() Window:Tag({ Title = "Stab Tech", Color = Color3.fromHex("#EC4899"), Radius = 15 }) end)
+local Window = nil
+pcall(function()
+    Window = WindUI:CreateWindow({
+        Title = "femboysakenstab ✨", Icon = "heart",
+        Author = "by the lovesaken team", Folder = "lovesaken",
+        Size = UDim2.fromOffset(650, 560),
+        Transparent = true, Resizable = true, Theme = "Dark",
+        SideBarWidth = 200, HideSearchBar = false,
+    })
+end)
+pcall(function()
+    Window:EditOpenButton({
+        Title = "femboysakenstab", Icon = "sparkles",
+        CornerRadius = UDim.new(0, 20), StrokeThickness = 2,
+        Color = ColorSequence.new(Color3.fromHex("#A78BFA"), Color3.fromHex("#EC4899")),
+        Enabled = true, Draggable = true,
+    })
+end)
+pcall(function() Window:Tag({ Title = "Stab Tech", Color = Color3.fromHex("#A78BFA"), Radius = 15 }) end)
 
 
 

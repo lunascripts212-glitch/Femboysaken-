@@ -128,6 +128,9 @@ if not WindUI then
 end
 pcall(function() WindUI:SetTheme("Dark") end)
 
+task.spawn(function()
+
+
 -- ============================================================
 --  WINDOW
 -- ============================================================
@@ -2277,3 +2280,4 @@ LocalPlayer.OnTeleport:Connect(function()
         if lmsThread then task.cancel(lmsThread) end
     end)
 end)
+end) -- close task.spawn wrapper

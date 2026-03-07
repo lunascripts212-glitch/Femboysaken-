@@ -479,168 +479,157 @@ game:GetService("UserInputService").InputBegan:Connect(function(input, gpe)
 end)
 
 
+
 -- ============================================================
 --  UI TABS
 -- ============================================================
-local TabBackstab  = Window:Tab({ Title = "Backstab",  Icon = "sword"     })
-local TabConfig    = Window:Tab({ Title = "Config",    Icon = "settings"  })
-local TabInterface = Window:Tab({ Title = "Interface", Icon = "scan"      })
+local TabBackstab  = Window:Tab({ Title = "Backstab",  Icon = "sword"    })
+local TabConfig    = Window:Tab({ Title = "Config",    Icon = "settings" })
+local TabInterface = Window:Tab({ Title = "Interface", Icon = "scan"     })
 
 -- ============================================================
 --  BACKSTAB TAB
 -- ============================================================
-pcall(function()
-    local SMain = TabBackstab:Section({ Title = "⚔️ Settings", Opened = true })
+local SMain   = TabBackstab:Section({ Title = "⚔️ Settings",   Opened = true })
+local SVisual = TabBackstab:Section({ Title = "🔵 Visuals",    Opened = true })
+local SStats  = TabBackstab:Section({ Title = "📊 Stats",      Opened = true })
 
-    SMain:Toggle({ Title = "Enabled", Value = false, Callback = function(v)
-        pcall(function() enabled = v; set("enabled", v) end)
-    end })
+SMain:Toggle({ Title = "Enabled", Value = false, Callback = function(v)
+    enabled = v
+end })
 
-    SMain:Toggle({ Title = "Auto Use Dagger", Value = false, Callback = function(v)
-        pcall(function() daggerEnabled = v; set("daggerEnabled", v) end)
-    end })
+SMain:Toggle({ Title = "Auto Use Dagger", Value = false, Callback = function(v)
+    daggerEnabled = v
+end })
 
-    SMain:Toggle({ Title = "Auto Crouch", Value = false, Callback = function(v)
-        pcall(function()
-            autoCrouchEnabled = v; set("autoCrouchEnabled", v)
-            syncLungeHoldToPosture()
-            WindUI:Notify({ Title = "Auto Crouch", Content = v and "On — lunge hold set to 0.415s" or "Off — lunge hold set to 0.25s", Icon = "user", Duration = 2 })
-        end)
-    end })
+SMain:Toggle({ Title = "Auto Crouch", Value = false, Callback = function(v)
+    autoCrouchEnabled = v
+    syncLungeHoldToPosture()
+end })
 
-    SMain:Toggle({ Title = "Auto Ping Calibration", Value = true, Callback = function(v)
-        pcall(function() autoPingEnabled = v; set("autoPingEnabled", v) end)
-    end })
+SMain:Toggle({ Title = "Auto Ping Calibration", Value = true, Callback = function(v)
+    autoPingEnabled = v
+end })
 
-    pingLabel = SMain:Label({
-        Title       = "Live Ping",
-        Description = string.format("Ping: %dms  |  Flip Delay: %.3fs", measuredPingMs, DASH_FLIP_DELAY),
-    })
+pingLabel = SMain:Label({
+    Title       = "Live Ping",
+    Description = string.format("Ping: %dms  |  Flip Delay: %.3fs", measuredPingMs, DASH_FLIP_DELAY),
+})
 
-    SMain:Dropdown({ Title = "Mode", Values = { "Auto Backstab", "Dash-Stab Tech" }, Value = "Auto Backstab", Callback = function(v)
-        pcall(function() mode = v; set("mode", v) end)
-    end })
+SMain:Dropdown({ Title = "Mode", Values = { "Auto Backstab", "Dash-Stab Tech" }, Value = "Auto Backstab", Callback = function(v)
+    mode = v
+end })
 
-    detectionRangeSlider = SMain:Slider({ Title = "Detection Range", Step = 1,
-        Value = { Min = 1, Max = 32, Default = DEFAULT_PROXIMITY },
-        Callback = function(v) if not suppressCallback then baseProximity = v; set("baseProximity", v) end end
-    })
+detectionRangeSlider = SMain:Slider({ Title = "Detection Range", Step = 1,
+    Value = { Min = 1, Max = 32, Default = DEFAULT_PROXIMITY },
+    Callback = function(v) if not suppressCallback then baseProximity = v end end
+})
 
-    SMain:Slider({ Title = "Aim Snap Delay (s)", Step = 0.01,
-        Value = { Min = 0.00, Max = 0.40, Default = AIM_SNAP_DELAY },
-        Callback = function(v) pcall(function() AIM_SNAP_DELAY = v; set("AIM_SNAP_DELAY", v) end) end
-    })
+SMain:Slider({ Title = "Aim Snap Delay (s)", Step = 0.01,
+    Value = { Min = 0.00, Max = 0.40, Default = AIM_SNAP_DELAY },
+    Callback = function(v) AIM_SNAP_DELAY = v end
+})
 
-    SMain:Slider({ Title = "Flip Delay (s) [Manual]", Step = 0.01,
-        Value = { Min = 0.28, Max = 0.65, Default = DASH_FLIP_DELAY },
-        Callback = function(v) pcall(function() if not autoPingEnabled then DASH_FLIP_DELAY = v end end) end
-    })
+SMain:Slider({ Title = "Flip Delay (s) [Manual]", Step = 0.01,
+    Value = { Min = 0.28, Max = 0.65, Default = DASH_FLIP_DELAY },
+    Callback = function(v) if not autoPingEnabled then DASH_FLIP_DELAY = v end end
+})
 
-    SMain:Slider({ Title = "Lunge Hold (s) [Manual]", Step = 0.005,
-        Value = { Min = 0.10, Max = 0.50, Default = LUNGE_HOLD_DURATION },
-        Callback = function(v) pcall(function() if not autoCrouchEnabled then LUNGE_HOLD_DURATION = v end end) end
-    })
+SMain:Slider({ Title = "Lunge Hold (s) [Manual]", Step = 0.005,
+    Value = { Min = 0.10, Max = 0.50, Default = LUNGE_HOLD_DURATION },
+    Callback = function(v) if not autoCrouchEnabled then LUNGE_HOLD_DURATION = v end end
+})
 
-    SMain:Slider({ Title = "Depth Offset (st)", Step = 0.25,
-        Value = { Min = 0.0, Max = 5.0, Default = DEPTH_OFFSET },
-        Callback = function(v) pcall(function() DEPTH_OFFSET = v; set("DEPTH_OFFSET", v) end) end
-    })
+SMain:Slider({ Title = "Depth Offset (st)", Step = 0.25,
+    Value = { Min = 0.0, Max = 5.0, Default = DEPTH_OFFSET },
+    Callback = function(v) DEPTH_OFFSET = v end
+})
 
-    SMain:Slider({ Title = "Cooldown (s)", Step = 0.5,
-        Value = { Min = 0.5, Max = 10.0, Default = COOLDOWN },
-        Callback = function(v) pcall(function() COOLDOWN = v; set("COOLDOWN", v) end) end
-    })
+SMain:Slider({ Title = "Cooldown (s)", Step = 0.5,
+    Value = { Min = 0.5, Max = 10.0, Default = COOLDOWN },
+    Callback = function(v) COOLDOWN = v end
+})
 
-    local SVisual = TabBackstab:Section({ Title = "🔵 Visuals", Opened = true })
+SVisual:Toggle({ Title = "Show Radius Ring", Value = true, Callback = function(v)
+    showRadius = v
+    if not v then destroyAllRadiusParts() end
+end })
 
-    SVisual:Toggle({ Title = "Show Radius Ring", Value = true, Callback = function(v)
-        pcall(function() showRadius = v; set("showRadius", v); if not v then destroyAllRadiusParts() end end)
-    end })
+SVisual:Toggle({ Title = "Noclip (N key)", Value = false, Callback = function(v)
+    setNoclip(v)
+end })
 
-    SVisual:Toggle({ Title = "Noclip (N key)", Value = false, Callback = function(v)
-        pcall(function() setNoclip(v) end)
-    end })
+triggerLabel = SStats:Label({
+    Title       = "Trigger Count",
+    Description = "Fires this session: 0",
+})
 
-    local SStats = TabBackstab:Section({ Title = "📊 Stats", Opened = true })
-
-    triggerLabel = SStats:Label({
-        Title       = "Trigger Count",
-        Description = "Fires this session: 0",
-    })
-
-    SStats:Button({ Title = "Reset Counter", Callback = function()
-        pcall(function()
-            totalTriggers = 0
-            if triggerLabel then triggerLabel:SetDescription("Fires this session: 0") end
-        end)
-    end })
-end)
+SStats:Button({ Title = "Reset Counter", Callback = function()
+    totalTriggers = 0
+    if triggerLabel then triggerLabel:SetDescription("Fires this session: 0") end
+end })
 
 -- ============================================================
 --  CONFIG TAB
 -- ============================================================
-pcall(function()
-    local ST = TabConfig:Section({ Title = "🎨 Theme", Opened = true })
-    ST:Dropdown({ Title = "Theme",
-        Values = { "Dark","Light","Rose","Plant","Rainbow","Midnight","Violet","CottonCandy","MonokaiPro","Indigo","Sky","Crimson","Amber","Emerald","Red" },
-        Value  = "Rose",
-        Callback = function(t) pcall(function() WindUI:SetTheme(t); set("uiTheme", t) end) end
-    })
+local ST = TabConfig:Section({ Title = "🎨 Theme", Opened = true })
+ST:Dropdown({ Title = "Theme",
+    Values = { "Dark","Light","Rose","Plant","Rainbow","Midnight","Violet","CottonCandy","MonokaiPro","Indigo","Sky","Crimson","Amber","Emerald","Red" },
+    Value  = "Dark",
+    Callback = function(t) WindUI:SetTheme(t) end
+})
 
-    local SC = TabConfig:Section({ Title = "💾 Configuration", Opened = true })
-    SC:Button({ Title = "💾 Save Config", Callback = function()
-        pcall(function() saveConfig(); WindUI:Notify({ Title = "Saved ✓", Content = "Config saved", Icon = "check", Duration = 2 }) end)
-    end })
-    SC:Button({ Title = "🔄 Load Config", Callback = function()
-        pcall(function()
-            if loadConfig() then WindUI:Notify({ Title = "Loaded ✓", Content = "Config restored", Icon = "check", Duration = 2 })
-            else WindUI:Notify({ Title = "No config", Content = "Nothing saved yet", Icon = "alert", Duration = 2 }) end
-        end)
-    end })
-end)
+local SC = TabConfig:Section({ Title = "💾 Configuration", Opened = true })
+SC:Button({ Title = "💾 Save Config", Callback = function()
+    saveConfig()
+    WindUI:Notify({ Title = "Saved ✓", Content = "Config saved", Icon = "check", Duration = 2 })
+end })
+SC:Button({ Title = "🔄 Load Config", Callback = function()
+    if loadConfig() then
+        WindUI:Notify({ Title = "Loaded ✓", Content = "Config restored", Icon = "check", Duration = 2 })
+    else
+        WindUI:Notify({ Title = "No config", Content = "Nothing saved yet", Icon = "alert", Duration = 2 })
+    end
+end })
 
 -- ============================================================
 --  INTERFACE TAB
 -- ============================================================
-pcall(function()
-    local SI = TabInterface:Section({ Title = "UI Functions", Opened = true })
+local SI = TabInterface:Section({ Title = "UI Functions", Opened = true })
 
-    TabInterface:Keybind({ Title = "Toggle UI", Value = "RightControl", Callback = function()
-        pcall(function() Window:Toggle() end)
-    end })
+TabInterface:Keybind({ Title = "Toggle UI", Value = "RightControl", Callback = function()
+    Window:Toggle()
+end })
 
-    SI:Button({ Title = "Unload Script", Callback = function()
-        pcall(function()
-            isRunning = false; enabled = false; autoCrouchEnabled = false
-            setAutoRotate(true); destroyAllRadiusParts(); Window:Destroy()
-        end)
-    end })
+SI:Button({ Title = "Unload Script", Callback = function()
+    isRunning = false
+    enabled = false
+    autoCrouchEnabled = false
+    setAutoRotate(true)
+    destroyAllRadiusParts()
+    Window:Destroy()
+end })
 
-    SI:Button({ Title = "Close UI", Callback = function()
-        pcall(function() Window:Destroy() end)
-    end })
-end)
+SI:Button({ Title = "Close UI", Callback = function()
+    Window:Destroy()
+end })
 
 -- ============================================================
 --  FINAL NOTIFY
 -- ============================================================
 task.wait(1)
-pcall(function()
-    WindUI:Notify({
-        Title    = "femboysakenstab ✨",
-        Content  = "Auto Backstab · Dash-Stab · Auto Crouch · Ping Cal",
-        Icon     = "heart",
-        Duration = 5,
-    })
-end)
+WindUI:Notify({
+    Title    = "femboysakenstab ✨",
+    Content  = "Auto Backstab · Dash-Stab · Auto Crouch · Ping Cal",
+    Icon     = "heart",
+    Duration = 5,
+})
 
 -- ============================================================
 --  TELEPORT CLEANUP
 -- ============================================================
 clientPlayer.OnTeleport:Connect(function()
-    pcall(function()
-        isRunning = false
-        if noclipConnection then noclipConnection:Disconnect() end
-        destroyAllRadiusParts()
-    end)
+    isRunning = false
+    if noclipConnection then noclipConnection:Disconnect() end
+    destroyAllRadiusParts()
 end)

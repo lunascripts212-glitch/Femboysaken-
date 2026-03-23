@@ -35,7 +35,7 @@ local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION = 1.0
+local HOLD_DURATION = 2.0
 
 local killerMotionData = {}
 
@@ -83,9 +83,9 @@ do
     Config.load()
 end
 
-enabled       = Config.get("enabled",    false)
-aimbotOn      = Config.get("aimbotOn",   false)
-PREDICTION    = Config.get("prediction", PREDICTION)
+enabled    = Config.get("enabled",    false)
+aimbotOn   = Config.get("aimbotOn",   false)
+PREDICTION = Config.get("prediction", PREDICTION)
 
 -- ════════════════════════════════════════
 --   KILLER TRACKING
@@ -110,13 +110,9 @@ end
 
 local function getKillerHeadPosition(killer)
     local head = killer:FindFirstChild("Head")
-    if head then
-        return head.Position
-    end
+    if head then return head.Position end
     local hrp = killer:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0)
-    end
+    if hrp then return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0) end
     return nil
 end
 
@@ -187,44 +183,37 @@ end
 local function getThrowPhysics(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return nil end
-
     local vel = getKillerVelocity(killerHRP)
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return nil end
-
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
     local predicted = killerHeadPos + vel * PREDICTION
-    local target    = predicted
-    local throwDir  = CFrame.lookAt(myHRP.Position, target) * CFrame.new(0, 0, -500)
+    local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
     local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
     local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
-    return spawnPos, initVel, gravity, target
+    return spawnPos, initVel, gravity, predicted
 end
 
 local function buildSpoofCF(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return Camera.CFrame end
-
     local vel = getKillerVelocity(killerHRP)
     local v0  = abilityCfg.MaxSpeed
     local g   = abilityCfg.ProjectileArc
-
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return Camera.CFrame end
-
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-    local predicted = killerHeadPos + vel * PREDICTION
-    local target    = predicted
-    local delta     = target - spawnPos
-    local flatV     = Vector3.new(delta.X, 0, delta.Z)
-    local dx        = flatV.Magnitude
-    local dy        = delta.Y
+    local target   = killerHeadPos + vel * PREDICTION
+    local delta    = target - spawnPos
+    local flatV    = Vector3.new(delta.X, 0, delta.Z)
+    local dx       = flatV.Magnitude
+    local dy       = delta.Y
     if dx < 0.01 then
         local d = dy >= 0 and Vector3.new(0,1,0) or Vector3.new(0,-1,0)
         return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + d)
@@ -266,18 +255,17 @@ local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFuncti
 
 local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
     if isMobile then
-        -- FIX: use holdActive flag so spoof stays for the full HOLD_DURATION
         local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
         local origDevice = LocalPlayer:GetAttribute("Device")
-        local holdActive = true  -- keeps spoof alive across multiple server queries
+        local holdActive = true
 
         LocalPlayer:SetAttribute("Device", "Mobile")
 
         if NetworkRF then
             NetworkRF.OnClientInvoke = function(reqName, ...)
                 if reqName == "GetCameraCF" and holdActive then
-                    return spoofCF  -- stays spoofed until holdActive = false
+                    return spoofCF
                 end
                 if originalCB then return originalCB(reqName, ...) end
             end
@@ -288,7 +276,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         fireCallback()
 
         task.delay(HOLD_DURATION, function()
-            holdActive = false  -- release spoof after full 1 second
+            holdActive = false
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -296,10 +284,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         end)
     else
         local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
-        if not spawnPos then
-            fireCallback()
-            return
-        end
+        if not spawnPos then fireCallback(); return end
 
         local landPos = spawnPos
         local prev    = spawnPos
@@ -351,13 +336,30 @@ local function applyPatch(actor)
 
         local abilityCfg = self.Config.Crystal
 
-        -- Let the game run its own UI by calling crystalCB with a fake long ChannelTime
-        -- so it never auto-fires before we do
-        local originalChannelTime = abilityCfg.ChannelTime
-        abilityCfg.ChannelTime = 9999
-        crystalCB(self, p290)
-        abilityCfg.ChannelTime = originalChannelTime
+        -- ── Animated charge bar: fills from 0% red to 100% green over HOLD_DURATION ──
+        local chargeUI = nil
+        local fillConn = nil
+        pcall(function()
+            chargeUI = abilityCfg.ChargeUI:Clone()
+            chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
+            chargeUI.Bar.Percent.Text = "0%"
+            chargeUI.Bar.ImageColor3  = Color3.new(1, 0, 0)
 
+            local startTime = tick()
+            fillConn = RunService.Heartbeat:Connect(function()
+                local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
+                pcall(function()
+                    chargeUI.Bar.Percent.Text = math.floor(progress * 100) .. "%"
+                    chargeUI.Bar.ImageColor3  = Color3.new(1 - progress, progress, 0)
+                end)
+                if progress >= 1 then
+                    fillConn:Disconnect()
+                    fillConn = nil
+                end
+            end)
+        end)
+
+        -- ── Beam indicator ──
         local indicator     = nil
         local indicatorConn = nil
 
@@ -379,8 +381,16 @@ local function applyPatch(actor)
             end)
         end
 
+        -- ── Hold then fire ──
         task.spawn(function()
             task.wait(HOLD_DURATION)
+
+            if fillConn then fillConn:Disconnect(); fillConn = nil end
+            pcall(function()
+                if chargeUI and chargeUI.Parent then
+                    chargeUI:Destroy(); chargeUI = nil
+                end
+            end)
 
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
@@ -441,47 +451,39 @@ end
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "LoveThrow",
-    Icon = 0,
-    LoadingTitle = "LoveThrow",
-    LoadingSubtitle = "by LoveSaken Team",
-    Theme = "Dark",
-    ConfigurationSaving = {
-        Enabled = false,
-    }
+    Name             = "LoveThrow",
+    Icon             = 0,
+    LoadingTitle     = "LoveThrow",
+    LoadingSubtitle  = "by LoveSaken Team",
+    Theme            = "Dark",
+    ConfigurationSaving = { Enabled = false },
 })
 
 local MainTab = Window:CreateTab("Main", 0)
 
-local StatusSection = MainTab:CreateSection("Status")
-
+MainTab:CreateSection("Status")
 local StatusParagraph = MainTab:CreateParagraph({
-    Title = "Status",
-    Content = "Waiting for actor..."
+    Title   = "Status",
+    Content = "Waiting for actor...",
 })
-
 local function setStatus(text)
-    pcall(function()
-        StatusParagraph:Set(text)
-    end)
+    pcall(function() StatusParagraph:Set(text) end)
 end
 
-local PlatformSection = MainTab:CreateSection("Platform")
-
+MainTab:CreateSection("Platform")
 MainTab:CreateParagraph({
-    Title = "Platform",
+    Title   = "Platform",
     Content = isMobile
         and "Mobile — OnClientInvoke spoof"
-        or  "PC — cursor snapped to arc landing"
+        or  "PC — cursor snapped to arc landing",
 })
 
-local TogglesSection = MainTab:CreateSection("Toggles")
-
+MainTab:CreateSection("Toggles")
 MainTab:CreateToggle({
-    Name = "Enable Patch",
+    Name         = "Enable Patch",
     CurrentValue = enabled,
-    Flag = "EnablePatch",
-    Callback = function(state)
+    Flag         = "EnablePatch",
+    Callback     = function(state)
         if unloaded then return end
         enabled = state
         Config.set("enabled", state)
@@ -494,10 +496,10 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateToggle({
-    Name = "Aimbot (Auto-Aim to Head)",
+    Name         = "Aimbot (Auto-Aim to Head)",
     CurrentValue = aimbotOn,
-    Flag = "Aimbot",
-    Callback = function(state)
+    Flag         = "Aimbot",
+    Callback     = function(state)
         if unloaded then return end
         aimbotOn = state
         Config.set("aimbotOn", state)
@@ -509,27 +511,24 @@ MainTab:CreateToggle({
     end,
 })
 
-local SlidersSection = MainTab:CreateSection("Settings")
-
+MainTab:CreateSection("Settings")
 MainTab:CreateSlider({
-    Name = "Prediction",
-    Range = {PREDICTION_MIN, PREDICTION_MAX},
-    Increment = 0.01,
-    Suffix = "s",
+    Name         = "Prediction",
+    Range        = {PREDICTION_MIN, PREDICTION_MAX},
+    Increment    = 0.01,
+    Suffix       = "s",
     CurrentValue = PREDICTION,
-    Flag = "Prediction",
-    Callback = function(v)
+    Flag         = "Prediction",
+    Callback     = function(v)
         PREDICTION = v
         Config.set("prediction", v)
     end,
 })
 
 local SettingsTab = Window:CreateTab("Settings", 0)
-
-local UnloadSection = SettingsTab:CreateSection("Unload")
-
+SettingsTab:CreateSection("Unload")
 SettingsTab:CreateButton({
-    Name = "Unload Script",
+    Name     = "Unload Script",
     Callback = function()
         if unloaded then return end
         unloaded = true
@@ -538,8 +537,8 @@ SettingsTab:CreateButton({
         pcall(function() removePatch(getLocalActor()) end)
         pcall(function()
             Rayfield:Notify({
-                Title = "LoveThrow",
-                Content = "Unloaded successfully",
+                Title    = "LoveThrow",
+                Content  = "Unloaded successfully",
                 Duration = 3,
             })
         end)
@@ -567,8 +566,8 @@ task.spawn(function()
                 print("[LoveThrow] New round — resetting patch.")
                 pcall(function()
                     Rayfield:Notify({
-                        Title = "LoveThrow",
-                        Content = "New round — patch re-applied",
+                        Title    = "LoveThrow",
+                        Content  = "New round — patch re-applied",
                         Duration = 3,
                     })
                 end)

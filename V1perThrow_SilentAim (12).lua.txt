@@ -1,4 +1,4 @@
--- LoveThrow by LoveSaken Team (Full Nuclear UI Fix)
+-- LoveThrow by LoveSaken Team (Fixed UI - "Charge" Target)
 -- Run this as a LocalScript via your executor
 
 local Players         = game:GetService("Players")
@@ -31,8 +31,6 @@ local unloaded    = false
 
 local HEAD_OFFSET = 1.5
 local PREDICTION  = 0.6
-local PREDICTION_MIN = 0.0
-local PREDICTION_MAX = 1.0
 local HOLD_DURATION = 2.0 
 
 local killerMotionData = {}
@@ -53,18 +51,14 @@ do
     local DIR  = "LoveThrow"
     local FILE = DIR .. "/config.json"
     local hs   = game:GetService("HttpService")
-    local function prep()
-        if not fs.hasFolder(DIR) then fs.makeFolder(DIR) end
-    end
+    local function prep() if not fs.hasFolder(DIR) then fs.makeFolder(DIR) end end
     function Config.load()
         prep()
         if not fs.hasFile(FILE) then return end
         local raw = fs.read(FILE)
         if not raw or raw == "" then return end
         local ok, t = pcall(hs.JSONDecode, hs, raw)
-        if ok and type(t) == "table" then
-            for k, v in pairs(t) do Config._data[k] = v end
-        end
+        if ok and type(t) == "table" then for k, v in pairs(t) do Config._data[k] = v end end
     end
     function Config.save()
         prep()
@@ -81,12 +75,12 @@ do
     Config.load()
 end
 
-enabled    = Config.get("enabled",    false)
-aimbotOn   = Config.get("aimbotOn",   false)
+enabled    = Config.get("enabled", false)
+aimbotOn   = Config.get("aimbotOn", false)
 PREDICTION = Config.get("prediction", PREDICTION)
 
 -- ════════════════════════════════════════
---   UTILITIES & MATH
+--   AIMBOT UTILS
 -- ════════════════════════════════════════
 
 local function getKillerVelocity(hrp)
@@ -99,19 +93,9 @@ local function getKillerVelocity(hrp)
     end
     local dt = now - data.lastTime
     if dt <= 0 then return data.velocity end
-    local vel      = (pos - data.lastPos) / dt
-    data.lastPos  = pos
-    data.lastTime = now
-    data.velocity = vel
+    local vel = (pos - data.lastPos) / dt
+    data.lastPos, data.lastTime, data.velocity = pos, now, vel
     return vel
-end
-
-local function getKillerHeadPosition(killer)
-    local head = killer:FindFirstChild("Head")
-    if head then return head.Position end
-    local hrp = killer:FindFirstChild("HumanoidRootPart")
-    if hrp then return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0) end
-    return nil
 end
 
 local function getNearestKiller(fromPos)
@@ -130,85 +114,8 @@ local function getNearestKiller(fromPos)
     return nearest
 end
 
-local arcParams = RaycastParams.new()
-arcParams.RespectCanCollide = true
-arcParams.CollisionGroup    = "Killers"
-arcParams.FilterType        = Enum.RaycastFilterType.Exclude
-arcParams.FilterDescendantsInstances = {workspace:FindFirstChild("Players")}
-
-local function getThrowPhysics(myHRP, killer, abilityCfg)
-    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-    if not killerHRP then return nil end
-    local vel = getKillerVelocity(killerHRP)
-    local killerHeadPos = getKillerHeadPosition(killer)
-    if not killerHeadPos then return nil end
-    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH      = hum and hum.HipHeight or 1.35
-    local v238      = (hipH + myHRP.Size.Y / 2) / 2
-    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-    local predicted = killerHeadPos + vel * PREDICTION
-    local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
-    local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
-    local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
-    return spawnPos, initVel, gravity, predicted
-end
-
 -- ════════════════════════════════════════
---   AIMBOT CORE
--- ════════════════════════════════════════
-
-local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
-
-local function buildSpoofCF(myHRP, killer, abilityCfg)
-    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-    if not killerHRP then return Camera.CFrame end
-    local vel = getKillerVelocity(killerHRP)
-    local killerHeadPos = getKillerHeadPosition(killer)
-    if not killerHeadPos then return Camera.CFrame end
-    
-    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, 2, 0)
-    local target   = killerHeadPos + vel * PREDICTION
-    local delta    = target - spawnPos
-    local flatV    = Vector3.new(delta.X, 0, delta.Z)
-    local dx       = flatV.Magnitude
-    local dy       = delta.Y
-    local v0       = abilityCfg.MaxSpeed
-    local g        = abilityCfg.ProjectileArc
-    
-    local v2 = v0 * v0
-    local disc = v2*v2 - g*(g*dx*dx + 2*dy*v2)
-    local theta = disc < 0 and math.atan2(dy,dx) or math.atan2(v2-math.sqrt(disc),g*dx)
-    
-    local flatDir = flatV.Unit
-    local yawCF = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + flatDir)
-    return yawCF * CFrame.Angles(theta, 0, 0)
-end
-
-local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
-    if isMobile then
-        local spoofCF = buildSpoofCF(myHRP, killer, abilityCfg)
-        local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
-        
-        if NetworkRF then
-            NetworkRF.OnClientInvoke = function(reqName, ...)
-                if reqName == "GetCameraCF" then return spoofCF end
-                if originalCB then return originalCB(reqName, ...) end
-            end
-        end
-        fireCallback()
-        task.delay(1, function() if NetworkRF then NetworkRF.OnClientInvoke = originalCB end end)
-    else
-        local spawnPos, initVel, gravity, target = getThrowPhysics(myHRP, killer, abilityCfg)
-        local screenPos, onScreen = Camera:WorldToScreenPoint(target)
-        if onScreen then
-            pcall(mousemoveabs, screenPos.X, screenPos.Y)
-        end
-        fireCallback()
-    end
-end
-
--- ════════════════════════════════════════
---   PATCH LOGIC (NUCLEAR UI FIX)
+--   PATCH LOGIC (CLEANUP FOCUS)
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -228,51 +135,27 @@ local function applyPatch(actor)
         if RunService:IsServer() or not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- Trigger game logic
+        -- Run Game Code
         local result = crystalCB(self, p290)
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        -- ── CUSTOM UI CLONE ──
-        local customUI = nil
-        pcall(function()
-            customUI = abilityCfg.ChargeUI:Clone()
-            customUI.Name = "LT_CustomCharge"
-            customUI.Parent = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI") or LocalPlayer.PlayerGui:FindFirstChildOfClass("ScreenGui")
-            
-            local bar = customUI:FindFirstChild("Bar", true)
-            if bar then
-                local startTime = tick()
-                task.spawn(function()
-                    while customUI and customUI.Parent do
-                        local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
-                        bar.Size = UDim2.new(progress, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
-                        bar.ImageColor3 = Color3.fromHSV(progress * 0.35, 1, 1)
-                        if progress >= 1 then break end
-                        RunService.Heartbeat:Wait()
-                    end
-                end)
-            end
-        end)
+        -- ── CLEANUP FUNCTION (Finds "Charge") ──
+        local function cleanupChargeUI()
+            -- Force State Reset
+            self.State.IsCrystalEquipped = false
+            Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", false)
 
-        -- ── NUCLEAR CLEANUP FUNCTION ──
-        local function nuclearCleanup()
-            -- 1. Remove our clone
-            if customUI then pcall(function() customUI:Destroy() end) end
-            
-            -- 2. Hunt and Destroy the game's original stuck UI
-            for _, v in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do
-                if v.Name == "ChargeUI" or v.Name == "Charge" or v:IsA("Frame") and v:FindFirstChild("Percent") then
-                   pcall(function() v:Destroy() end)
+            -- Kill any UI named "Charge" anywhere in PlayerGui
+            for _, obj in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do
+                if obj.Name == "Charge" or obj.Name == "ChargeUI" then
+                    pcall(function() obj:Destroy() end)
                 end
             end
 
-            -- 3. Reset States
-            self.State.IsCrystalEquipped = false
-            Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", false)
-            
+            -- Clean up beam indicator
             if self.Instances and self.Instances.CrystalIndicator then
                 for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
                 self.Instances.CrystalIndicator = nil
@@ -282,39 +165,55 @@ local function applyPatch(actor)
         -- ── HOLD & FIRE ──
         task.spawn(function()
             task.wait(HOLD_DURATION)
-            if not self.State.IsCrystalEquipped then nuclearCleanup() return end
+            
+            if not self.State.IsCrystalEquipped then 
+                cleanupChargeUI()
+                return 
+            end
 
             local remoteName = ("%sCrystalInput"):format(self.Player.Name)
 
             local function finalFire()
+                -- Network Fire
                 Network:FireServerConnection(remoteName, "REMOTE_EVENT", 1)
+                
+                -- Wait for server to register, then send Release and Clean
                 task.delay(0.1, function()
                     Network:FireServerConnection(remoteName, "REMOTE_EVENT", 0)
-                    nuclearCleanup()
+                    cleanupChargeUI()
                 end)
             end
 
+            -- Aim Logic
             if aimbotOn then
                 local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
                 local killer = myHRP and getNearestKiller(myHRP.Position)
-                if killer then doAimAndFire(myHRP, killer, finalFire, abilityCfg) else finalFire() end
-            else
-                finalFire()
+                if killer then
+                    -- Simple Aim Assist
+                    local head = killer:FindFirstChild("Head")
+                    if head then
+                        local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                        if onScreen then pcall(mousemoveabs, screenPos.X, screenPos.Y) end
+                    end
+                end
             end
+            
+            finalFire()
         end)
         
         return result
     end
     patched = true
+    print("[LoveThrow] Patch active. Targeting 'Charge' UI for cleanup.")
 end
 
 -- ════════════════════════════════════════
---   UI & MAIN LOOP
+--   MAIN INTERFACE
 -- ════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "LoveThrow", LoadingTitle = "LoveThrow", LoadingSubtitle = "Fixed UI Edition",
+    Name = "LoveThrow", LoadingTitle = "LoveThrow", 
     ConfigurationSaving = { Enabled = false }
 })
 
@@ -330,16 +229,11 @@ MainTab:CreateToggle({
     Name = "Aimbot", CurrentValue = aimbotOn,
     Callback = function(s) aimbotOn = s; Config.set("aimbotOn", s) end
 })
-MainTab:CreateSlider({
-    Name = "Prediction", Range = {0, 1}, Increment = 0.01, CurrentValue = PREDICTION,
-    Callback = function(v) PREDICTION = v; Config.set("prediction", v) end
-})
 
+-- Auto-Patch Loop
 task.spawn(function()
     while task.wait(1) do
         if unloaded then break end
         if enabled and not patched then applyPatch(getLocalActor()) end
     end
 end)
-
-print("[LoveThrow] Script Loaded with Nuclear UI Fix.")

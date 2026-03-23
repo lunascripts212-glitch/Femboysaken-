@@ -344,21 +344,71 @@ local function applyPatch(actor)
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
+        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- On throw (not equip/cancel), spoof camera direction for aimbot
-        if aimbotOn and p290 and p290 ~= "Cancelled" then
-            local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-            if myHRP then
-                local killer = getNearestKiller(myHRP.Position)
-                if killer then
-                    local abilityCfg = self.Config.Crystal
-                    doAimAndFire(myHRP, killer, function() end, abilityCfg)
+        self.State.IsCrystalEquipped = true
+        Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
+
+        local abilityCfg = self.Config.Crystal
+
+        local indicator     = nil
+        local indicatorConn = nil
+
+        pcall(function()
+            indicator = self.Behavior:lcl_createCrystalIndicator(self)
+        end)
+
+        if aimbotOn and indicator then
+            indicatorConn = RunService.Heartbeat:Connect(function()
+                if not self.State.IsCrystalEquipped then
+                    if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                    return
                 end
-            end
+                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                if not myHRP then return end
+                local killer = getNearestKiller(myHRP.Position)
+                if not killer then return end
+                updateBeam(indicator, myHRP, killer, abilityCfg)
+            end)
         end
 
-        -- Let the game handle everything naturally — animation, charge, UI, fire
-        return crystalCB(self, p290)
+        task.spawn(function()
+            task.wait(2.0)
+
+            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+            pcall(function()
+                if self.Instances and self.Instances.CrystalIndicator then
+                    for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
+                    self.Instances.CrystalIndicator = nil
+                end
+            end)
+
+            if not (self.State.IsCrystalEquipped and enabled) then return end
+
+            local function doFire()
+                Network:FireServerConnection(
+                    ("%sCrystalInput"):format(self.Player.Name),
+                    "REMOTE_EVENT",
+                    1
+                )
+            end
+
+            if aimbotOn then
+                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                if myHRP then
+                    local killer = getNearestKiller(myHRP.Position)
+                    if killer then
+                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
+                    else
+                        doFire()
+                    end
+                else
+                    doFire()
+                end
+            else
+                doFire()
+            end
+        end)
     end
 
     patched = true

@@ -36,10 +36,6 @@ local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION     = 0.9
-local HOLD_DURATION_MIN = 0.3
-local HOLD_DURATION_MAX = 2.0
-
 local killerMotionData = {}
 
 -- ════════════════════════════════════════
@@ -89,7 +85,6 @@ end
 enabled       = Config.get("enabled",      false)
 aimbotOn      = Config.get("aimbotOn",     false)
 PREDICTION    = Config.get("prediction",   PREDICTION)
-HOLD_DURATION = Config.get("holdDuration", HOLD_DURATION)
 
 -- ════════════════════════════════════════
 --   KILLER TRACKING
@@ -297,8 +292,9 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 
         fireCallback()
 
-        task.delay(HOLD_DURATION, function()
-            -- Safety restore if server never called GetCameraCF
+        -- Restore immediately after firing (no hold duration)
+        task.spawn(function()
+            task.wait(0.1)
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -547,19 +543,6 @@ MainTab:CreateSlider({
     Callback = function(v)
         PREDICTION = v
         Config.set("prediction", v)
-    end,
-})
-
-MainTab:CreateSlider({
-    Name = "Hold Duration",
-    Range = {HOLD_DURATION_MIN, HOLD_DURATION_MAX},
-    Increment = 0.1,
-    Suffix = "s",
-    CurrentValue = HOLD_DURATION,
-    Flag = "HoldDuration",
-    Callback = function(v)
-        HOLD_DURATION = v
-        Config.set("holdDuration", v)
     end,
 })
 

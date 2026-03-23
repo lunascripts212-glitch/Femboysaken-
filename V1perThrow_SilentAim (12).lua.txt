@@ -1,5 +1,6 @@
 -- LoveThrow by LoveSaken Team
 -- Run this as a LocalScript via your executor
+-- ONLY adds beam and aim assist - NO AUTO FIRE
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -10,7 +11,6 @@ local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
 
 local Actors  = require(ReplicatedStorage.Modules.Actors)
-local Network = require(ReplicatedStorage.Modules.Network)
 local Util    = require(ReplicatedStorage.Modules.Util)
 
 -- ════════════════════════════════════════
@@ -28,6 +28,7 @@ local aimbotOn    = false
 local patched     = false
 local crystalCB   = nil
 local unloaded    = false
+local originalFire = nil
 
 -- Always target head
 local HEAD_OFFSET = 1.5
@@ -258,12 +259,12 @@ local function updateBeam(indicator, myHRP, killer, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   AIM + FIRE (HOOKS INTO ORIGINAL FIRE MECHANIC)
+--   AIM ASSIST ONLY - NO FIRING
 -- ════════════════════════════════════════
 
 local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-local function doAimAssist(myHRP, killer, abilityCfg)
+local function doAimAssistOnly(myHRP, killer, abilityCfg)
     if isMobile then
         local spoofCF = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
@@ -317,7 +318,7 @@ local function doAimAssist(myHRP, killer, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC - ONLY ADDS AIM, DOESN'T INTERFERE WITH FIRING
+--   PATCH LOGIC - ONLY ADD BEAM AND AIM ASSIST, NO FIRING
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -332,16 +333,18 @@ local function applyPatch(actor)
     if not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then return end
 
     crystalCB = actor.Behavior.Abilities.Crystal.Callback
+    
+    -- Save original Fire function if it exists
+    originalFire = actor.Behavior.Abilities.Crystal.Fire
 
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
-        -- Let the original callback handle everything first
-        local result = crystalCB(self, p290)
+        -- Always call original first - let the game handle everything
+        if crystalCB then
+            crystalCB(self, p290)
+        end
         
-        -- Only add our aim assist if enabled and the crystal is being equipped
+        -- Only add our visual/aim assist if enabled and not cancelled
         if enabled and p290 ~= "Cancelled" and p290 then
-            self.State.IsCrystalEquipped = true
-            Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
-            
             local abilityCfg = self.Config.Crystal
             
             -- Create beam indicator
@@ -367,29 +370,32 @@ local function applyPatch(actor)
                 end)
             end
             
-            -- Hook into the fire event to apply aim assist when the game naturally fires
-            local originalFire = self.Behavior.Abilities.Crystal.Fire
-            if originalFire and not self._aimHooked then
-                self._aimHooked = true
+            -- Hook into the original Fire to add aim assist when the game naturally fires
+            if aimbotOn and originalFire then
                 self.Behavior.Abilities.Crystal.Fire = function(crystalSelf, ...)
-                    if aimbotOn and enabled then
-                        local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                        if myHRP then
-                            local killer = getNearestKiller(myHRP.Position)
-                            if killer then
-                                doAimAssist(myHRP, killer, abilityCfg)
-                            end
+                    -- Apply aim assist right before the game fires
+                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                    if myHRP then
+                        local killer = getNearestKiller(myHRP.Position)
+                        if killer then
+                            doAimAssistOnly(myHRP, killer, abilityCfg)
                         end
                     end
+                    -- Call the original fire function
                     return originalFire(crystalSelf, ...)
                 end
             end
             
             -- Clean up beam when crystal is unequipped
-            local cleanupConn = self.Changed:Connect(function(prop)
+            local cleanupConn = nil
+            cleanupConn = self.Changed:Connect(function(prop)
                 if prop == "State" and not self.State.IsCrystalEquipped then
                     if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
                     if cleanupConn then cleanupConn:Disconnect() end
+                    -- Restore original Fire function
+                    if originalFire then
+                        self.Behavior.Abilities.Crystal.Fire = originalFire
+                    end
                     pcall(function()
                         if self.Instances and self.Instances.CrystalIndicator then
                             for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
@@ -399,12 +405,10 @@ local function applyPatch(actor)
                 end
             end)
         end
-        
-        return result
     end
 
     patched = true
-    print("[LoveThrow] Patched.")
+    print("[LoveThrow] Patched - Aim assist only, no auto fire.")
 end
 
 local function removePatch(actor)
@@ -415,10 +419,9 @@ local function removePatch(actor)
         actor.Behavior.Abilities.Crystal.Callback = crystalCB
         crystalCB = nil
     end
-    if actor.Behavior.Abilities.Crystal.Fire and actor._aimHooked then
-        -- Restore original fire if we hooked it
-        actor.Behavior.Abilities.Crystal.Fire = nil
-        actor._aimHooked = nil
+    if originalFire then
+        actor.Behavior.Abilities.Crystal.Fire = originalFire
+        originalFire = nil
     end
     patched = false
     print("[LoveThrow] Patch removed.")
@@ -479,7 +482,7 @@ MainTab:CreateToggle({
         if enabled and not patched and actor then 
             pcall(function() applyPatch(actor) end)
         end
-        setStatus(enabled and "Active" or "Inactive")
+        setStatus(enabled and "Active (Aim Assist Only)" or "Inactive")
     end,
 })
 
@@ -567,7 +570,7 @@ task.spawn(function()
             if currentActor then
                 if enabled then 
                     pcall(function() applyPatch(currentActor) end)
-                    setStatus("Active")
+                    setStatus("Active (Aim Assist Only)")
                 else 
                     setStatus("Ready — toggle to activate") 
                 end

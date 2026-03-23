@@ -310,7 +310,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC - Call original for animations, hide UI
+--   PATCH LOGIC - REMOVED INSTANT THROW
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -331,28 +331,15 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- Call original callback FIRST to trigger animations
+        -- Let the game handle everything naturally (no instant throw)
         local result = crystalCB(self, p290)
-        
-        -- Immediately hide the game's charge UI
-        pcall(function()
-            local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
-            if tempUI then
-                for _, child in ipairs(tempUI:GetChildren()) do
-                    if child:IsA("Frame") and child.Name ~= "LoveThrowUI" then
-                        child.Visible = false
-                        child.Enabled = false
-                    end
-                end
-            end
-        end)
         
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        -- ── Your custom animated charge bar ──
+        -- Your custom animated charge bar
         local chargeUI = nil
         local fillConn = nil
         pcall(function()
@@ -376,7 +363,7 @@ local function applyPatch(actor)
             end)
         end)
 
-        -- ── Beam indicator ──
+        -- Beam indicator
         local indicator     = nil
         local indicatorConn = nil
 
@@ -398,50 +385,46 @@ local function applyPatch(actor)
             end)
         end
 
-        -- ── Hold then fire ──
-        task.spawn(function()
-            task.wait(HOLD_DURATION)
-
-            -- Destroy our custom UI
-            if fillConn then fillConn:Disconnect(); fillConn = nil end
-            pcall(function()
-                if chargeUI and chargeUI.Parent then
-                    chargeUI:Destroy()
-                end
-            end)
-
-            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-            pcall(function()
-                if self.Instances and self.Instances.CrystalIndicator then
-                    for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
-                    self.Instances.CrystalIndicator = nil
-                end
-            end)
-
-            if not (self.State.IsCrystalEquipped and enabled) then return end
-
-            local function doFire()
-                Network:FireServerConnection(
-                    ("%sCrystalInput"):format(self.Player.Name),
-                    "REMOTE_EVENT",
-                    1
-                )
-            end
-
-            if aimbotOn then
-                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if myHRP then
-                    local killer = getNearestKiller(myHRP.Position)
-                    if killer then
-                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
-                    else
-                        doFire()
+        -- Hook into the game's natural fire event for aim assist
+        local originalFire = self.Behavior.Abilities.Crystal.Fire
+        if originalFire and not self._aimHooked then
+            self._aimHooked = true
+            self.Behavior.Abilities.Crystal.Fire = function(crystalSelf, ...)
+                if aimbotOn and enabled then
+                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                    if myHRP then
+                        local killer = getNearestKiller(myHRP.Position)
+                        if killer then
+                            doAimAndFire(myHRP, killer, function() end, abilityCfg)
+                        end
                     end
-                else
-                    doFire()
                 end
-            else
-                doFire()
+                return originalFire(crystalSelf, ...)
+            end
+        end
+
+        -- Clean up when crystal is unequipped
+        local cleanupConn = nil
+        cleanupConn = self.Changed:Connect(function(prop)
+            if prop == "State" and not self.State.IsCrystalEquipped then
+                if fillConn then fillConn:Disconnect(); fillConn = nil end
+                if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                if cleanupConn then cleanupConn:Disconnect() end
+                if self._aimHooked then
+                    self.Behavior.Abilities.Crystal.Fire = originalFire
+                    self._aimHooked = nil
+                end
+                pcall(function()
+                    if chargeUI and chargeUI.Parent then
+                        chargeUI:Destroy()
+                    end
+                end)
+                pcall(function()
+                    if self.Instances and self.Instances.CrystalIndicator then
+                        for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
+                        self.Instances.CrystalIndicator = nil
+                    end
+                end)
             end
         end)
         
@@ -449,7 +432,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[LoveThrow] Patched - Animations play, game UI hidden, custom UI shows, holds 2 seconds.")
+    print("[LoveThrow] Patched - Instant throw removed, natural game timing preserved.")
 end
 
 local function removePatch(actor)
@@ -459,6 +442,10 @@ local function removePatch(actor)
     if crystalCB then
         actor.Behavior.Abilities.Crystal.Callback = crystalCB
         crystalCB = nil
+    end
+    if actor.Behavior.Abilities.Crystal.Fire and actor._aimHooked then
+        actor.Behavior.Abilities.Crystal.Fire = nil
+        actor._aimHooked = nil
     end
     patched = false
     print("[LoveThrow] Patch removed.")

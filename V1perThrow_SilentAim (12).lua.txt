@@ -36,7 +36,7 @@ local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION = 2.0  -- Fixed 2 second hold
+local HOLD_DURATION = 2.0  -- Hold the crystal for 2 seconds before firing
 
 local killerMotionData = {}
 
@@ -286,7 +286,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         RunService.Heartbeat:Wait()
         fireCallback()
 
-        task.delay(HOLD_DURATION, function()
+        task.delay(0.1, function()
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -346,16 +346,15 @@ local function applyPatch(actor)
             return crystalCB(self, p290) 
         end
 
-        -- First, let the game handle its own setup
+        -- Let the game handle its own setup first (this shows the charge UI)
         local result = crystalCB(self, p290)
         
-        -- Then add our aim assist features without breaking the game's UI
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        -- Create beam indicator only
+        -- Create beam indicator only - no custom UI
         local indicator = nil
         local indicatorConn = nil
 
@@ -378,10 +377,10 @@ local function applyPatch(actor)
             end)
         end
 
-        -- Wait for the game's natural channel time
+        -- Hold the crystal for 2 seconds before firing
         task.spawn(function()
-            task.wait(abilityCfg.ChannelTime + 0.05)
-
+            task.wait(HOLD_DURATION)  -- Hold for 2 seconds
+            
             -- Clean up beam
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
@@ -422,7 +421,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[LoveThrow] Patched - 2 second hold, game UI preserved.")
+    print("[LoveThrow] Patched - Holds crystal for 2 seconds, keeps game UI, shows beam.")
 end
 
 local function removePatch(actor)

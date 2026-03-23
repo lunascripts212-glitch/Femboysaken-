@@ -1,7 +1,5 @@
--- LoveThrow
--- Silent aim only — throws at killer's head when YOU decide to throw
--- Mobile-friendly (spoofs GetCameraCF)
--- Uses Rayfield UI
+-- LoveThrow (WindUI version)
+-- Silent aim to killer head — manual throw only
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -17,109 +15,103 @@ local Util    = require(ReplicatedStorage.Modules.Util)
 
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
--- ────────────────────────────────────────────────
--- CONFIG
--- ────────────────────────────────────────────────
-local PREDICTION = 0.135     -- how many seconds to lead movement
+-- Config
+local PREDICTION = 0.135  -- lead time in seconds
 
 -- ────────────────────────────────────────────────
--- RAYFIELD UI (Sirius-style)
+-- WindUI
 -- ────────────────────────────────────────────────
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
-local Window = Rayfield:CreateWindow({
-    Name = "LoveThrow",
-    LoadingTitle = "LoveThrow",
-    LoadingSubtitle = "silent crystal head aim",
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "LoveThrow",
-        FileName = "Settings"
-    },
-    Discord = {
-        Enabled = false,
-    },
-    KeySystem = false,
+local Window = WindUI:CreateWindow({
+    Title = "LoveThrow",
+    Icon = "heart",
+    Author = "silent crystal head aim",
+    Folder = "LoveThrow",
+    Theme = "Dark",
 })
 
-local MainTab = Window:CreateTab("Main", 4483362458) -- lucide crosshair icon id
+if not isMobile then
+    Window:SetToggleKey(Enum.KeyCode.RightShift)
+end
 
-local Section = MainTab:CreateSection("Settings")
+local Tab = Window:Tab({ Title = "Main", Icon = "crosshair" })
 
-local ToggleEnabled = MainTab:CreateToggle({
-    Name = "Enable Silent Aim",
-    CurrentValue = true,
-    Flag = "ToggleEnabled",
-    Callback = function(Value)
-        -- just for ui feedback — real toggle is _G.LoveThrow_Enabled
-        _G.LoveThrow_Enabled = Value
+Tab:Paragraph({
+    Title = "LoveThrow",
+    Content = isMobile 
+        and "Mobile — spoofs GetCameraCF to aim at killer head" 
+        or "PC — relies on server trusting client camera direction"
+})
+
+local EnabledToggle = Tab:Toggle({
+    Title = "Enable Silent Aim",
+    Desc = "When you throw crystal, aims silently at nearest killer's head",
+    Icon = "target",
+    Value = true,
+    Callback = function(state)
+        _G.LoveThrow_Enabled = state
     end,
 })
 
-local SliderPrediction = MainTab:CreateSlider({
-    Name = "Prediction (seconds)",
-    Range = {0, 0.4},
-    Increment = 0.005,
-    Suffix = "s",
-    CurrentValue = PREDICTION,
-    Flag = "PredSlider",
-    Callback = function(Value)
-        PREDICTION = Value
+Tab:Slider({
+    Title = "Prediction",
+    Desc = "How far ahead to lead the killer's movement",
+    Step = 0.005,
+    Value = { Min = 0, Max = 0.4, Default = PREDICTION },
+    Callback = function(v)
+        PREDICTION = v
     end,
 })
 
-MainTab:CreateButton({
-    Name = "Unload LoveThrow",
+Tab:Divider()
+
+Tab:Button({
+    Title = "Unload",
+    Desc = "Remove patch and destroy UI",
+    Icon = "power",
     Callback = function()
         _G.LoveThrow_Enabled = false
         _G.LoveThrow_Unloaded = true
-        Rayfield:Notify({
-            Title = "Unloaded",
-            Content = "LoveThrow has been unloaded.",
-            Duration = 4,
-            Image = 4483362458,
-        })
-        task.delay(0.6, function()
-            Window:Destroy()
-        end)
+        pcall(removePatch)
+        WindUI:Notify({ Title = "LoveThrow", Content = "Unloaded.", Icon = "check", Duration = 3 })
+        task.delay(0.4, function() Window:Destroy() end)
     end,
 })
 
 -- ────────────────────────────────────────────────
--- KILLER FIND + VELOCITY
+-- Killer tracking
 -- ────────────────────────────────────────────────
 local killerMotionData = {}
 
 local function getKillerVelocity(hrp)
     local now = tick()
     local pos = hrp.Position
-    local data = killerMotionData[hrp]
-    if not data then
-        killerMotionData[hrp] = {lastPos = pos, lastTime = now, velocity = Vector3.zero}
-        return Vector3.zero
-    end
+    local data = killerMotionData[hrp] or {lastPos = pos, lastTime = now, velocity = Vector3.zero}
+    killerMotionData[hrp] = data
+
     local dt = now - data.lastTime
-    if dt <= 0 then return data.velocity end
-    local vel = (pos - data.lastPos) / dt
-    data.lastPos = pos
-    data.lastTime = now
-    data.velocity = vel
-    return vel
+    if dt > 0 then
+        data.velocity = (pos - data.lastPos) / dt
+        data.lastPos = pos
+        data.lastTime = now
+    end
+    return data.velocity
 end
 
 local function getNearestKiller(fromPos)
-    local killersFolder = workspace:FindFirstChild("Players") 
+    local killers = workspace:FindFirstChild("Players") 
         and workspace.Players:FindFirstChild("Killers")
-    if not killersFolder then return nil end
+    if not killers then return nil end
 
-    local nearest, bestDist = nil, math.huge
-    for _, model in killersFolder:GetChildren() do
+    local nearest, best = nil, math.huge
+    for _, model in killers:GetChildren() do
         local hrp = model:FindFirstChild("HumanoidRootPart")
         local hum = model:FindFirstChildOfClass("Humanoid")
         if hrp and hum and hum.Health > 0 then
             local dist = (hrp.Position - fromPos).Magnitude
-            if dist < bestDist then
-                bestDist = dist
+            if dist < best then
+                best = dist
                 nearest = model
             end
         end
@@ -128,21 +120,22 @@ local function getNearestKiller(fromPos)
 end
 
 -- ────────────────────────────────────────────────
--- SPOOF CAMERA CFRAME (mobile / server checks UpVector/3 too)
+-- Ballistic camera spoof (head aim)
 -- ────────────────────────────────────────────────
-local function buildHeadAimSpoofCF(myHRP, killerHRP, abilityCfg)
+local function buildSpoofCF(myHRP, killerHRP, abilityCfg)
     local vel = getKillerVelocity(killerHRP)
     local v0 = abilityCfg.MaxSpeed
-    local g  = abilityCfg.ProjectileArc
+    local g = abilityCfg.ProjectileArc
 
-    local hipHeight = (myHRP.Parent:FindFirstChildOfClass("Humanoid") and .HipHeight) or 1.35
-    local spawnOffset = (hipHeight + myHRP.Size.Y / 2) / 2
-    local spawnPos = myHRP.Position + Vector3.new(0, spawnOffset, 0)
+    local hum = myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH = hum and hum.HipHeight or 1.35
+    local spawnY = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos = myHRP.Position + Vector3.new(0, spawnY, 0)
 
-    local predictedPos = killerHRP.Position + vel * PREDICTION
-    local targetPos = predictedPos + Vector3.new(0, 1.4, 0)   -- ≈ head height
+    local predicted = killerHRP.Position + vel * PREDICTION
+    local target = predicted + Vector3.new(0, 1.4, 0)  -- head approx
 
-    local delta = targetPos - spawnPos
+    local delta = target - spawnPos
     local flat = Vector3.new(delta.X, 0, delta.Z)
     local dx = flat.Magnitude
     local dy = delta.Y
@@ -153,150 +146,123 @@ local function buildHeadAimSpoofCF(myHRP, killerHRP, abilityCfg)
     end
 
     local flatUnit = flat.Unit
-
     local vv = v0 * v0
-    local disc = vv*vv - g*(g*dx*dx + 2*dy*vv)
-    local tanTheta
-    if disc < 0 then
-        tanTheta = dy / dx
-    else
-        tanTheta = (vv - math.sqrt(disc)) / (g * dx)
-    end
+    local disc = vv * vv - g * (g * dx * dx + 2 * dy * vv)
+    local tanTheta = (disc < 0) and (dy / dx) or ((vv - math.sqrt(disc)) / (g * dx))
 
-    local alpha = math.atan2(3*tanTheta - 1, 3 + tanTheta)
+    local alpha = math.atan2(3 * tanTheta - 1, 3 + tanTheta)
 
-    local yawCF = CFrame.lookAt(Camera.CFrame.Position, Camera.CFrame.Position + flatUnit)
-    return yawCF * CFrame.Angles(alpha, 0, 0)
+    local yaw = CFrame.lookAt(Camera.CFrame.Position, Camera.CFrame.Position + flatUnit)
+    return yaw * CFrame.Angles(alpha, 0, 0)
 end
 
 -- ────────────────────────────────────────────────
--- PATCH CRYSTAL ABILITY
+-- Patch crystal ability (only spoof on actual fire)
 -- ────────────────────────────────────────────────
 local patched = false
-local originalCrystalCallback
+local originalCB
 
 local function getLocalActor()
-    for _, actor in Actors.CurrentActors do
-        if actor.Player == LocalPlayer then
-            return actor
-        end
+    for _, a in Actors.CurrentActors do
+        if a.Player == LocalPlayer then return a end
     end
     return nil
 end
 
 local function applyPatch(actor)
-    if patched then return end
-    if not actor or not actor.Behavior or not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then
+    if patched or not actor or not actor.Behavior or not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then
         return
     end
 
     local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-    originalCrystalCallback = actor.Behavior.Abilities.Crystal.Callback
+    originalCB = actor.Behavior.Abilities.Crystal.Callback
 
-    actor.Behavior.Abilities.Crystal.Callback = function(self, arg)
+    actor.Behavior.Abilities.Crystal.Callback = function(self, input)
         if RunService:IsServer() then
-            return originalCrystalCallback(self, arg)
+            return originalCB(self, input)
         end
 
-        -- Let normal channel/charge happen
-        local result = originalCrystalCallback(self, arg)
+        -- Let normal equip / channel / charge happen
+        local res = originalCB(self, input)
 
-        -- We only want to spoof when actually firing (input == 1)
-        if arg == 1 and _G.LoveThrow_Enabled then
+        -- Only spoof when user actually fires (input == 1)
+        if input == 1 and _G.LoveThrow_Enabled then
             local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-            if not myHRP then return result end
+            if not myHRP then return res end
 
-            local killerModel = getNearestKiller(myHRP.Position)
-            local killerHRP = killerModel and killerModel:FindFirstChild("HumanoidRootPart")
-            if not killerHRP then return result end
+            local killer = getNearestKiller(myHRP.Position)
+            local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
+            if not killerHRP then return res end
 
-            -- Mobile spoof path
             if isMobile and NetworkRF then
-                local origInvoke = getcallbackvalue(NetworkRF, "OnClientInvoke")
-                local origDevice = LocalPlayer:GetAttribute("Device")
+                local origInvoke = getcallbackvalue and getcallbackvalue(NetworkRF, "OnClientInvoke")
+                local origDev = LocalPlayer:GetAttribute("Device") or "PC"
 
                 LocalPlayer:SetAttribute("Device", "Mobile")
 
-                NetworkRF.OnClientInvoke = function(reqName, ...)
-                    if reqName == "GetCameraCF" then
+                local hook = function(name, ...)
+                    if name == "GetCameraCF" then
                         NetworkRF.OnClientInvoke = origInvoke
-                        return buildHeadAimSpoofCF(myHRP, killerHRP, self.Config.Crystal)
+                        return buildSpoofCF(myHRP, killerHRP, self.Config.Crystal)
                     end
-                    if origInvoke then
-                        return origInvoke(reqName, ...)
-                    end
+                    return origInvoke and origInvoke(name, ...) or nil
                 end
+                NetworkRF.OnClientInvoke = hook
 
-                -- Give attribute time to replicate
-                task.wait(0.08)
-
-                -- Let normal fire go through
-                -- (we already returned original result earlier — this is just spoof cleanup)
-                task.delay(1.5, function()
-                    if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= origInvoke then
+                -- Safety restore
+                task.delay(2, function()
+                    if NetworkRF and getcallbackvalue and getcallbackvalue(NetworkRF, "OnClientInvoke") == hook then
                         NetworkRF.OnClientInvoke = origInvoke
                     end
-                    LocalPlayer:SetAttribute("Device", origDevice or "PC")
+                    LocalPlayer:SetAttribute("Device", origDev)
                 end)
             end
-            -- PC: no mouse movement — we rely purely on GetCameraCF spoof (most games accept it)
+            -- PC: no extra spoof needed if server uses client camera (common in these games)
         end
 
-        return result
+        return res
     end
 
     patched = true
-    Rayfield:Notify({
-        Title = "LoveThrow",
-        Content = "Crystal patched — silent aim active on fire",
-        Duration = 4.2,
-    })
+    print("[LoveThrow] Patched — manual throw with silent head aim")
+    WindUI:Notify({ Title = "LoveThrow", Content = "Patched — throw manually", Duration = 3.5 })
 end
 
 local function removePatch()
     if not patched then return end
     local actor = getLocalActor()
-    if actor and actor.Behavior and actor.Behavior.Abilities and actor.Behavior.Abilities.Crystal and originalCrystalCallback then
-        actor.Behavior.Abilities.Crystal.Callback = originalCrystalCallback
+    if actor and actor.Behavior and actor.Behavior.Abilities and actor.Behavior.Abilities.Crystal and originalCB then
+        actor.Behavior.Abilities.Crystal.Callback = originalCB
     end
     patched = false
 end
 
 -- ────────────────────────────────────────────────
--- ACTOR / ROUND WATCHER
+-- Actor / round watcher
 -- ────────────────────────────────────────────────
 _G.LoveThrow_Enabled = true
 _G.LoveThrow_Unloaded = false
 
 task.spawn(function()
     local lastActor = nil
-
     while not _G.LoveThrow_Unloaded do
-        task.wait(0.8)
-
+        task.wait(0.6)
         local actor = getLocalActor()
 
         if actor ~= lastActor then
             killerMotionData = {}
             if lastActor then
                 removePatch()
-                Rayfield:Notify({
-                    Title = "LoveThrow",
-                    Content = "New round — re-patching crystal ability",
-                    Duration = 3.5,
-                })
+                WindUI:Notify({ Title = "LoveThrow", Content = "New round — repatching", Duration = 3 })
             end
-
             lastActor = actor
-
             if actor then
                 applyPatch(actor)
             end
         end
     end
-
     removePatch()
 end)
 
-print("[LoveThrow] Loaded — charge & throw manually, aim silently goes to killer head")
+print("[LoveThrow] Loaded — WindUI version — charge & throw yourself")

@@ -1,8 +1,8 @@
--- LoveThrow by LoveSaken Team
+-- LoveThrow by LoveSaken Team (Fixed UI & State Reset)
 -- Run this as a LocalScript via your executor
 
-local Players           = game:GetService("Players")
-local RunService        = game:GetService("RunService")
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
 
@@ -30,12 +30,10 @@ local crystalCB   = nil
 local unloaded    = false
 
 local HEAD_OFFSET = 1.5
-
-local PREDICTION     = 0.6
+local PREDICTION  = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
-
-local HOLD_DURATION = 2.0
+local HOLD_DURATION = 2.0 -- Matches the visual charge time
 
 local killerMotionData = {}
 
@@ -101,7 +99,7 @@ local function getKillerVelocity(hrp)
     end
     local dt = now - data.lastTime
     if dt <= 0 then return data.velocity end
-    local vel     = (pos - data.lastPos) / dt
+    local vel      = (pos - data.lastPos) / dt
     data.lastPos  = pos
     data.lastTime = now
     data.velocity = vel
@@ -162,7 +160,7 @@ local arcParams = RaycastParams.new()
 arcParams.RespectCanCollide = true
 arcParams.CollisionGroup    = "Killers"
 arcParams.FilterType        = Enum.RaycastFilterType.Exclude
-arcParams.FilterDescendantsInstances = workspace.Players:GetDescendants()
+arcParams.FilterDescendantsInstances = {workspace:FindFirstChild("Players")}
 
 local function traceArc(gravity, initVel, origin)
     local prev    = origin
@@ -187,8 +185,8 @@ local function getThrowPhysics(myHRP, killer, abilityCfg)
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return nil end
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH     = hum and hum.HipHeight or 1.35
-    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local hipH      = hum and hum.HipHeight or 1.35
+    local v238      = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
     local predicted = killerHeadPos + vel * PREDICTION
     local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
@@ -206,8 +204,8 @@ local function buildSpoofCF(myHRP, killer, abilityCfg)
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return Camera.CFrame end
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH     = hum and hum.HipHeight or 1.35
-    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local hipH      = hum and hum.HipHeight or 1.35
+    local v238      = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
     local target   = killerHeadPos + vel * PREDICTION
     local delta    = target - spawnPos
@@ -329,9 +327,11 @@ local function applyPatch(actor)
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
-        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
+        if p290 == "Cancelled" or not p290 then 
+            self.State.IsCrystalEquipped = false
+            return crystalCB(self, p290) 
+        end
 
-        -- FIRST: Call original callback to trigger game animations
         local result = crystalCB(self, p290)
         
         self.State.IsCrystalEquipped = true
@@ -339,36 +339,33 @@ local function applyPatch(actor)
 
         local abilityCfg = self.Config.Crystal
 
-        -- ── Animated charge bar: fills from 0% red to 100% green over HOLD_DURATION ──
+        -- ── FIXED VISUAL CHARGE BAR ──
         local chargeUI = nil
         local fillConn = nil
         pcall(function()
             chargeUI = abilityCfg.ChargeUI:Clone()
-            chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
-            chargeUI.Bar.Percent.Text = "0%"
-            chargeUI.Bar.ImageColor3  = Color3.new(1, 0, 0)
-
-            local startTime = tick()
-            fillConn = RunService.Heartbeat:Connect(function()
-                local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
-                pcall(function()
-                    chargeUI.Bar.Percent.Text = math.floor(progress * 100) .. "%"
-                    chargeUI.Bar.ImageColor3  = Color3.new(1 - progress, progress, 0)
+            chargeUI.Parent = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI") or LocalPlayer.PlayerGui:FindFirstChildOfClass("ScreenGui")
+            
+            local bar = chargeUI:FindFirstChild("Bar", true)
+            if bar then
+                local startTime = tick()
+                fillConn = RunService.Heartbeat:Connect(function()
+                    local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
+                    pcall(function()
+                        -- Update bar scale so it visually fills
+                        bar.Size = UDim2.new(progress, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
+                        bar.ImageColor3 = Color3.fromHSV(progress * 0.35, 1, 1)
+                        local txt = bar:FindFirstChild("Percent", true)
+                        if txt then txt.Text = math.floor(progress * 100) .. "%" end
+                    end)
+                    if progress >= 1 and fillConn then fillConn:Disconnect(); fillConn = nil end
                 end)
-                if progress >= 1 then
-                    fillConn:Disconnect()
-                    fillConn = nil
-                end
-            end)
+            end
         end)
 
-        -- ── Beam indicator ──
-        local indicator     = nil
+        local indicator = nil
         local indicatorConn = nil
-
-        pcall(function()
-            indicator = self.Behavior:lcl_createCrystalIndicator(self)
-        end)
+        pcall(function() indicator = self.Behavior:lcl_createCrystalIndicator(self) end)
 
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
@@ -377,25 +374,20 @@ local function applyPatch(actor)
                     return
                 end
                 local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if not myHRP then return end
-                local killer = getNearestKiller(myHRP.Position)
-                if not killer then return end
-                updateBeam(indicator, myHRP, killer, abilityCfg)
+                if myHRP then
+                    local killer = getNearestKiller(myHRP.Position)
+                    if killer then updateBeam(indicator, myHRP, killer, abilityCfg) end
+                end
             end)
         end
 
-        -- ── Hold then fire ──
         task.spawn(function()
             task.wait(HOLD_DURATION)
 
             if fillConn then fillConn:Disconnect(); fillConn = nil end
-            pcall(function()
-                if chargeUI and chargeUI.Parent then
-                    chargeUI:Destroy(); chargeUI = nil
-                end
-            end)
-
+            if chargeUI then pcall(function() chargeUI:Destroy() end) end
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+
             pcall(function()
                 if self.Instances and self.Instances.CrystalIndicator then
                     for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
@@ -405,28 +397,30 @@ local function applyPatch(actor)
 
             if not (self.State.IsCrystalEquipped and enabled) then return end
 
-            local function doFire()
-                Network:FireServerConnection(
-                    ("%sCrystalInput"):format(self.Player.Name),
-                    "REMOTE_EVENT",
-                    1
-                )
+            local function fireAbility()
+                local remoteName = ("%sCrystalInput"):format(self.Player.Name)
+                
+                -- SIGNAL 1: START/FIRE
+                Network:FireServerConnection(remoteName, "REMOTE_EVENT", 1)
+                
+                -- SIGNAL 0: RELEASE/RESET (Fixes the 0% stuck UI)
+                task.delay(0.1, function()
+                    Network:FireServerConnection(remoteName, "REMOTE_EVENT", 0)
+                    self.State.IsCrystalEquipped = false
+                    Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", false)
+                end)
             end
 
             if aimbotOn then
                 local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if myHRP then
-                    local killer = getNearestKiller(myHRP.Position)
-                    if killer then
-                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
-                    else
-                        doFire()
-                    end
+                local killer = myHRP and getNearestKiller(myHRP.Position)
+                if killer then
+                    doAimAndFire(myHRP, killer, fireAbility, abilityCfg)
                 else
-                    doFire()
+                    fireAbility()
                 end
             else
-                doFire()
+                fireAbility()
             end
         end)
         
@@ -434,7 +428,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[LoveThrow] Patched - Animations play, custom UI overlays, holds 2 seconds.")
+    print("[LoveThrow] Patched.")
 end
 
 local function removePatch(actor)
@@ -446,7 +440,6 @@ local function removePatch(actor)
         crystalCB = nil
     end
     patched = false
-    print("[LoveThrow] Patch removed.")
 end
 
 -- ════════════════════════════════════════
@@ -548,7 +541,6 @@ SettingsTab:CreateButton({
             })
         end)
         task.delay(0.5, function() pcall(function() Window:Destroy() end) end)
-        print("[LoveThrow] Unloaded.")
     end,
 })
 
@@ -568,14 +560,6 @@ task.spawn(function()
                 patched          = false
                 crystalCB        = nil
                 killerMotionData = {}
-                print("[LoveThrow] New round — resetting patch.")
-                pcall(function()
-                    Rayfield:Notify({
-                        Title    = "LoveThrow",
-                        Content  = "New round — patch re-applied",
-                        Duration = 3,
-                    })
-                end)
             end
             lastActor = currentActor
             if currentActor then
@@ -585,7 +569,6 @@ task.spawn(function()
                 else
                     setStatus("Ready — toggle to activate")
                 end
-                print("[LoveThrow] Actor found. Ready.")
             else
                 setStatus("Waiting for actor...")
             end

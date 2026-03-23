@@ -331,6 +331,9 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
+        -- FIRST: Call original callback to trigger game animations
+        local result = crystalCB(self, p290)
+        
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
@@ -426,10 +429,12 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
+        
+        return result
     end
 
     patched = true
-    print("[LoveThrow] Patched.")
+    print("[LoveThrow] Patched - Animations play, custom UI overlays, holds 2 seconds.")
 end
 
 local function removePatch(actor)

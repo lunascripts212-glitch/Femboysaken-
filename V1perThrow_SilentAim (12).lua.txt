@@ -344,6 +344,9 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
+        -- Call original first to let the game handle animations
+        crystalCB(self, p290)
+        
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
@@ -354,15 +357,6 @@ local function applyPatch(actor)
 
         pcall(function()
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
-        end)
-
-        -- Show ChargeUI at 100% / green (always full charge)
-        pcall(function()
-            local chargeUI = abilityCfg.ChargeUI:Clone()
-            chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
-            chargeUI.Bar.Percent.Text = "100%"
-            chargeUI.Bar.ImageColor3  = Color3.new(0, 1, 0)
-            self._patchChargeUI = chargeUI
         end)
 
         if aimbotOn and indicator then
@@ -379,7 +373,6 @@ local function applyPatch(actor)
             end)
         end
 
-        -- Use original channel time from the game
         task.spawn(function()
             task.wait(abilityCfg.ChannelTime + 0.05)
 
@@ -388,12 +381,6 @@ local function applyPatch(actor)
                 if self.Instances and self.Instances.CrystalIndicator then
                     for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
                     self.Instances.CrystalIndicator = nil
-                end
-            end)
-            pcall(function()
-                if self._patchChargeUI and self._patchChargeUI.Parent then
-                    self._patchChargeUI:Destroy()
-                    self._patchChargeUI = nil
                 end
             end)
 

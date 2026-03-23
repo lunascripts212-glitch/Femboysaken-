@@ -323,7 +323,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC
+--   PATCH LOGIC - REMOVE GAME UI COMPLETELY
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -346,15 +346,28 @@ local function applyPatch(actor)
             return crystalCB(self, p290) 
         end
 
-        -- Let the game handle its own setup first (this shows the charge UI)
-        local result = crystalCB(self, p290)
+        -- DON'T call original callback - this breaks the UI and makes it stuck at 0%
+        -- Instead, manually set up the crystal
         
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
+        
+        -- Hide/remove any charge UI that appears
+        pcall(function()
+            -- Try to find and hide the charge UI elements
+            local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
+            if tempUI then
+                for _, child in ipairs(tempUI:GetChildren()) do
+                    if child:IsA("Frame") or child:IsA("ImageLabel") then
+                        child.Visible = false
+                    end
+                end
+            end
+        end)
 
-        -- Create beam indicator only - no custom UI
+        -- Create beam indicator only
         local indicator = nil
         local indicatorConn = nil
 
@@ -362,7 +375,7 @@ local function applyPatch(actor)
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
-        -- Update beam during charge
+        -- Update beam during hold
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -417,11 +430,12 @@ local function applyPatch(actor)
             end
         end)
         
-        return result
+        -- Don't return anything from original callback since we didn't call it
+        return nil
     end
 
     patched = true
-    print("[LoveThrow] Patched - Holds crystal for 2 seconds, keeps game UI, shows beam.")
+    print("[LoveThrow] Patched - Holds crystal for 2 seconds, no charge UI, only beam.")
 end
 
 local function removePatch(actor)

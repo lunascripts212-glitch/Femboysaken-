@@ -344,14 +344,13 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- Call original first to let the game handle animations
-        crystalCB(self, p290)
-        
+        -- Let the game handle the crystal equipping and UI naturally
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
+        -- Create beam indicator only - no UI modifications
         local indicator = nil
         local indicatorConn = nil
 
@@ -359,6 +358,7 @@ local function applyPatch(actor)
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
+        -- Only add beam tracking
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -373,9 +373,11 @@ local function applyPatch(actor)
             end)
         end
 
+        -- Wait for the game's natural channel time
         task.spawn(function()
             task.wait(abilityCfg.ChannelTime + 0.05)
 
+            -- Clean up beam
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
                 if self.Instances and self.Instances.CrystalIndicator then
@@ -410,6 +412,9 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
+        
+        -- Call the original callback to let the game handle its UI and animations
+        return crystalCB(self, p290)
     end
 
     patched = true

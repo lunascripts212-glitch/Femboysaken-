@@ -344,80 +344,21 @@ local function applyPatch(actor)
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
-        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- FIX: only set state ourselves, do NOT call crystalCB again at the end
-        -- (calling it caused double-fire and GUI flicker)
-        self.State.IsCrystalEquipped = true
-        Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
-
-        local abilityCfg = self.Config.Crystal
-
-        -- Create beam indicator
-        local indicator    = nil
-        local indicatorConn = nil
-
-        pcall(function()
-            indicator = self.Behavior:lcl_createCrystalIndicator(self)
-        end)
-
-        -- Beam tracking while crystal is equipped
-        if aimbotOn and indicator then
-            indicatorConn = RunService.Heartbeat:Connect(function()
-                if not self.State.IsCrystalEquipped then
-                    if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-                    return
-                end
-                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if not myHRP then return end
+        -- On throw (not equip/cancel), spoof camera direction for aimbot
+        if aimbotOn and p290 and p290 ~= "Cancelled" then
+            local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+            if myHRP then
                 local killer = getNearestKiller(myHRP.Position)
-                if not killer then return end
-                updateBeam(indicator, myHRP, killer, abilityCfg)
-            end)
+                if killer then
+                    local abilityCfg = self.Config.Crystal
+                    doAimAndFire(myHRP, killer, function() end, abilityCfg)
+                end
+            end
         end
 
-        -- Wait for channel time then fire
-        task.spawn(function()
-            task.wait(1.05)
-
-            -- Clean up beam
-            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-            pcall(function()
-                if self.Instances and self.Instances.CrystalIndicator then
-                    for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
-                    self.Instances.CrystalIndicator = nil
-                end
-            end)
-
-            if not (self.State.IsCrystalEquipped and enabled) then return end
-
-            local function doFire()
-                Network:FireServerConnection(
-                    ("%sCrystalInput"):format(self.Player.Name),
-                    "REMOTE_EVENT",
-                    1
-                )
-            end
-
-            if aimbotOn then
-                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if myHRP then
-                    local killer = getNearestKiller(myHRP.Position)
-                    if killer then
-                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
-                    else
-                        doFire()
-                    end
-                else
-                    doFire()
-                end
-            else
-                doFire()
-            end
-        end)
-
-        -- FIX: removed "return crystalCB(self, p290)" that was here before
-        -- It caused the original throw logic to run on top of ours = GUI flicker + double fire
+        -- Let the game handle everything naturally — animation, charge, UI, fire
+        return crystalCB(self, p290)
     end
 
     patched = true

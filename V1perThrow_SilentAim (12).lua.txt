@@ -36,7 +36,7 @@ local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION = 1.0  -- Fixed 1 second hold
+local HOLD_DURATION = 2.0  -- Fixed 2 second hold
 
 local killerMotionData = {}
 
@@ -342,15 +342,20 @@ local function applyPatch(actor)
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
-        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
+        if p290 == "Cancelled" or not p290 then 
+            return crystalCB(self, p290) 
+        end
 
-        -- Let the game handle the crystal equipping and UI naturally
+        -- First, let the game handle its own setup
+        local result = crystalCB(self, p290)
+        
+        -- Then add our aim assist features without breaking the game's UI
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        -- Create beam indicator only - no UI modifications
+        -- Create beam indicator only
         local indicator = nil
         local indicatorConn = nil
 
@@ -358,7 +363,7 @@ local function applyPatch(actor)
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
-        -- Only add beam tracking
+        -- Update beam during charge
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -413,12 +418,11 @@ local function applyPatch(actor)
             end
         end)
         
-        -- Call the original callback to let the game handle its UI and animations
-        return crystalCB(self, p290)
+        return result
     end
 
     patched = true
-    print("[LoveThrow] Patched.")
+    print("[LoveThrow] Patched - 2 second hold, game UI preserved.")
 end
 
 local function removePatch(actor)

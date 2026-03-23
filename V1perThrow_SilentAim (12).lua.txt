@@ -1,4 +1,4 @@
--- V1perThrow w/ Rayfield UI
+-- LoveThrow by LoveSaken Team
 -- Run this as a LocalScript via your executor
 
 local Players           = game:GetService("Players")
@@ -29,9 +29,8 @@ local patched     = false
 local crystalCB   = nil
 local unloaded    = false
 
-local AIM_OFFSET     = -0.3
-local AIM_OFFSET_MIN = -5.0
-local AIM_OFFSET_MAX =  5.0
+-- Always target head (offset to head position)
+local HEAD_OFFSET = 1.5 -- Standard head offset from HumanoidRootPart
 
 local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
@@ -56,7 +55,7 @@ local fs = {
 }
 local Config = {}
 do
-    local DIR  = "V1perThrow"
+    local DIR  = "LoveThrow"
     local FILE = DIR .. "/config.json"
     local hs   = game:GetService("HttpService")
     local function prep()
@@ -89,7 +88,6 @@ end
 
 enabled       = Config.get("enabled",      false)
 aimbotOn      = Config.get("aimbotOn",     false)
-AIM_OFFSET    = Config.get("aimOffset",    AIM_OFFSET)
 PREDICTION    = Config.get("prediction",   PREDICTION)
 HOLD_DURATION = Config.get("holdDuration", HOLD_DURATION)
 
@@ -112,6 +110,19 @@ local function getKillerVelocity(hrp)
     data.lastTime = now
     data.velocity = vel
     return vel
+end
+
+local function getKillerHeadPosition(killer)
+    local hrp = killer:FindFirstChild("HumanoidRootPart")
+    local head = killer:FindFirstChild("Head")
+    
+    if head then
+        return head.Position
+    elseif hrp then
+        -- If no head, estimate head position
+        return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0)
+    end
+    return nil
 end
 
 local function getNearestKiller(fromPos)
@@ -179,14 +190,21 @@ local function traceArc(gravity, initVel, origin)
 end
 
 -- Compute spawnPos + initVel for a given HRP→target throw
-local function getThrowPhysics(myHRP, killerHRP, abilityCfg)
-    local vel       = getKillerVelocity(killerHRP)
+local function getThrowPhysics(myHRP, killer, abilityCfg)
+    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+    if not killerHRP then return nil end
+    
+    local vel = getKillerVelocity(killerHRP)
+    local killerHeadPos = getKillerHeadPosition(killer)
+    
+    if not killerHeadPos then return nil end
+    
     local hum       = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH      = hum and hum.HipHeight or 1.35
     local v238      = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-    local predicted = killerHRP.Position + vel * PREDICTION
-    local target    = predicted + Vector3.new(0, AIM_OFFSET, 0)
+    local predicted = killerHeadPos + vel * PREDICTION
+    local target    = predicted
     local throwDir  = CFrame.lookAt(myHRP.Position, target) * CFrame.new(0, 0, -500)
     local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
     local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
@@ -194,16 +212,23 @@ local function getThrowPhysics(myHRP, killerHRP, abilityCfg)
 end
 
 -- Ballistic-solved camera CFrame (UpVector/3 corrected) — used for mobile spoof
-local function buildSpoofCF(myHRP, killerHRP, abilityCfg)
-    local vel      = getKillerVelocity(killerHRP)
-    local v0       = abilityCfg.MaxSpeed
-    local g        = abilityCfg.ProjectileArc
+local function buildSpoofCF(myHRP, killer, abilityCfg)
+    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+    if not killerHRP then return Camera.CFrame end
+    
+    local vel = getKillerVelocity(killerHRP)
+    local v0  = abilityCfg.MaxSpeed
+    local g   = abilityCfg.ProjectileArc
+    
+    local killerHeadPos = getKillerHeadPosition(killer)
+    if not killerHeadPos then return Camera.CFrame end
+    
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-    local predicted = killerHRP.Position + vel * PREDICTION
-    local target    = predicted + Vector3.new(0, AIM_OFFSET, 0)
+    local predicted = killerHeadPos + vel * PREDICTION
+    local target    = predicted
     local delta     = target - spawnPos
     local flatV     = Vector3.new(delta.X, 0, delta.Z)
     local dx        = flatV.Magnitude
@@ -227,9 +252,10 @@ end
 --   BEAM UPDATER
 -- ════════════════════════════════════════
 
-local function updateBeam(indicator, myHRP, killerHRP, abilityCfg)
+local function updateBeam(indicator, myHRP, killer, abilityCfg)
     if not indicator then return end
-    local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killerHRP, abilityCfg)
+    local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
+    if not spawnPos then return end
     local cs0, cs1, startCF, endCF  = traceArc(gravity, initVel, spawnPos)
     pcall(function()
         indicator.Beam.CurveSize0         = cs0
@@ -246,10 +272,10 @@ end
 
 local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-local function doAimAndFire(myHRP, killerHRP, fireCallback, abilityCfg)
+local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
     if isMobile then
         -- ── MOBILE: hook OnClientInvoke, force Device="Mobile" ───────
-        local spoofCF    = buildSpoofCF(myHRP, killerHRP, abilityCfg)
+        local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
 
         local origDevice = LocalPlayer:GetAttribute("Device")
@@ -281,16 +307,11 @@ local function doAimAndFire(myHRP, killerHRP, fireCallback, abilityCfg)
 
     else
         -- ── PC: mousemoveabs to arc landing screen position ──────────
-        -- Project arc landing point onto screen, snap cursor there.
-        -- CameraType=Scriptable for ONE heartbeat only to prevent
-        -- shiftlock from rotating the camera during mousemoveabs.
-        -- CFrame is NEVER set — camera stays visually identical.
-        local _, initVel, gravity, _ = getThrowPhysics(myHRP, killerHRP, abilityCfg)
-        local spawnPos               = (function()
-            local hum  = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-            local hipH = hum and hum.HipHeight or 1.35
-            return myHRP.CFrame.Position + Vector3.new(0, (hipH + myHRP.Size.Y/2)/2, 0)
-        end)()
+        local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
+        if not spawnPos then
+            fireCallback()
+            return
+        end
 
         -- Walk arc to find landing world position
         local landPos = spawnPos
@@ -372,10 +393,9 @@ local function applyPatch(actor)
                 end
                 local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
                 if not myHRP then return end
-                local killer    = getNearestKiller(myHRP.Position)
-                local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-                if not killerHRP then return end
-                updateBeam(indicator, myHRP, killerHRP, abilityCfg)
+                local killer = getNearestKiller(myHRP.Position)
+                if not killer then return end
+                updateBeam(indicator, myHRP, killer, abilityCfg)
             end)
         end
 
@@ -409,10 +429,9 @@ local function applyPatch(actor)
             if aimbotOn then
                 local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
                 if myHRP then
-                    local killer    = getNearestKiller(myHRP.Position)
-                    local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-                    if killerHRP then
-                        doAimAndFire(myHRP, killerHRP, doFire, abilityCfg)
+                    local killer = getNearestKiller(myHRP.Position)
+                    if killer then
+                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
                     else
                         doFire()
                     end
@@ -426,7 +445,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[V1perThrow] Patched.")
+    print("[LoveThrow] Patched.")
 end
 
 local function removePatch(actor)
@@ -438,7 +457,7 @@ local function removePatch(actor)
         crystalCB = nil
     end
     patched = false
-    print("[V1perThrow] Patch removed.")
+    print("[LoveThrow] Patch removed.")
 end
 
 -- ════════════════════════════════════════
@@ -448,41 +467,43 @@ end
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "V1perThrow",
-    Icon = 0, -- 0 = Default Icon
-    LoadingTitle = "V1perThrow",
-    LoadingSubtitle = "by V1per",
+    Name = "LoveThrow",
+    Icon = 0,
+    LoadingTitle = "LoveThrow",
+    LoadingSubtitle = "by LoveSaken Team",
     Theme = "Dark",
     ConfigurationSaving = {
         Enabled = false,
     }
 })
 
-local Tab = Window:CreateTab("Main", 0) -- 0 = Default Icon
+local MainTab = Window:CreateTab("Main", 0)
 
-local Section = Tab:CreateSection("Status")
+local StatusSection = MainTab:CreateSection("Status")
 
-local StatusParagraph = Tab:CreateParagraph({
+local StatusParagraph = MainTab:CreateParagraph({
     Title = "Status",
     Content = "Waiting for actor..."
 })
 
 local function setStatus(text)
-    StatusParagraph:Set(text)
+    pcall(function()
+        StatusParagraph:Set(text)
+    end)
 end
 
-local PlatformSection = Tab:CreateSection("Platform")
+local PlatformSection = MainTab:CreateSection("Platform")
 
-Tab:CreateParagraph({
+MainTab:CreateParagraph({
     Title = "Platform",
     Content = isMobile 
         and "Mobile — OnClientInvoke spoof, zero camera changes"
         or "PC — cursor snapped to arc landing, zero camera changes"
 })
 
-local TogglesSection = Tab:CreateSection("Toggles")
+local TogglesSection = MainTab:CreateSection("Toggles")
 
-Tab:CreateToggle({
+MainTab:CreateToggle({
     Name = "Enable Patch",
     CurrentValue = enabled,
     Flag = "EnablePatch",
@@ -491,13 +512,15 @@ Tab:CreateToggle({
         enabled = state
         Config.set("enabled", state)
         local actor = getLocalActor()
-        if enabled and not patched and actor then applyPatch(actor) end
+        if enabled and not patched and actor then 
+            pcall(function() applyPatch(actor) end)
+        end
         setStatus(enabled and "Active" or "Inactive")
     end,
 })
 
-Tab:CreateToggle({
-    Name = "Aimbot",
+MainTab:CreateToggle({
+    Name = "Aimbot (Auto-Aim to Head)",
     CurrentValue = aimbotOn,
     Flag = "Aimbot",
     Callback = function(state)
@@ -506,26 +529,15 @@ Tab:CreateToggle({
         Config.set("aimbotOn", state)
         if not aimbotOn then killerMotionData = {} end
         local actor = getLocalActor()
-        if aimbotOn and not patched and actor then applyPatch(actor) end
+        if aimbotOn and not patched and actor then 
+            pcall(function() applyPatch(actor) end)
+        end
     end,
 })
 
-local SlidersSection = Tab:CreateSection("Settings")
+local SlidersSection = MainTab:CreateSection("Settings")
 
-Tab:CreateSlider({
-    Name = "Aim Offset",
-    Range = {AIM_OFFSET_MIN, AIM_OFFSET_MAX},
-    Increment = 0.1,
-    Suffix = "studs",
-    CurrentValue = AIM_OFFSET,
-    Flag = "AimOffset",
-    Callback = function(v)
-        AIM_OFFSET = v
-        Config.set("aimOffset", v)
-    end,
-})
-
-Tab:CreateSlider({
+MainTab:CreateSlider({
     Name = "Prediction",
     Range = {PREDICTION_MIN, PREDICTION_MAX},
     Increment = 0.01,
@@ -538,7 +550,7 @@ Tab:CreateSlider({
     end,
 })
 
-Tab:CreateSlider({
+MainTab:CreateSlider({
     Name = "Hold Duration",
     Range = {HOLD_DURATION_MIN, HOLD_DURATION_MAX},
     Increment = 0.1,
@@ -563,13 +575,15 @@ SettingsTab:CreateButton({
         enabled  = false
         aimbotOn = false
         pcall(function() removePatch(getLocalActor()) end)
-        Rayfield:Notify({
-            Title = "V1perThrow",
-            Content = "Unloaded successfully",
-            Duration = 3,
-        })
-        task.delay(0.5, function() Window:Destroy() end)
-        print("[V1perThrow] Unloaded.")
+        pcall(function()
+            Rayfield:Notify({
+                Title = "LoveThrow",
+                Content = "Unloaded successfully",
+                Duration = 3,
+            })
+        end)
+        task.delay(0.5, function() pcall(function() Window:Destroy() end) end)
+        print("[LoveThrow] Unloaded.")
     end,
 })
 
@@ -589,18 +603,24 @@ task.spawn(function()
                 patched          = false
                 crystalCB        = nil
                 killerMotionData = {}
-                print("[V1perThrow] New round — resetting patch.")
-                Rayfield:Notify({
-                    Title = "V1perThrow",
-                    Content = "New round — patch re-applied",
-                    Duration = 3,
-                })
+                print("[LoveThrow] New round — resetting patch.")
+                pcall(function()
+                    Rayfield:Notify({
+                        Title = "LoveThrow",
+                        Content = "New round — patch re-applied",
+                        Duration = 3,
+                    })
+                end)
             end
             lastActor = currentActor
             if currentActor then
-                if enabled then applyPatch(currentActor); setStatus("Active")
-                else setStatus("Ready — toggle to activate") end
-                print("[V1perThrow] Actor found. Ready.")
+                if enabled then 
+                    pcall(function() applyPatch(currentActor) end)
+                    setStatus("Active")
+                else 
+                    setStatus("Ready — toggle to activate") 
+                end
+                print("[LoveThrow] Actor found. Ready.")
             else
                 setStatus("Waiting for actor...")
             end

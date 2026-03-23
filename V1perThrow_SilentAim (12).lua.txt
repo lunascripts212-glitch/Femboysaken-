@@ -351,9 +351,12 @@ local function applyPatch(actor)
 
         local abilityCfg = self.Config.Crystal
 
-        -- Override ChannelTime so the game's charge bar animates for exactly 2 seconds
+        -- Let the game run its own UI by calling crystalCB with a fake long ChannelTime
+        -- so it never auto-fires before we do
         local originalChannelTime = abilityCfg.ChannelTime
-        abilityCfg.ChannelTime = HOLD_DURATION
+        abilityCfg.ChannelTime = 9999
+        crystalCB(self, p290)
+        abilityCfg.ChannelTime = originalChannelTime
 
         local indicator     = nil
         local indicatorConn = nil
@@ -378,9 +381,6 @@ local function applyPatch(actor)
 
         task.spawn(function()
             task.wait(HOLD_DURATION)
-
-            -- Restore original channel time
-            abilityCfg.ChannelTime = originalChannelTime
 
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
@@ -416,8 +416,6 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
-
-        return crystalCB(self, p290)
     end
 
     patched = true

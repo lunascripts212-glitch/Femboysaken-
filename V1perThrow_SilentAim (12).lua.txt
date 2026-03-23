@@ -237,37 +237,43 @@ local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFuncti
 
 local function doAimAndFire(myHRP, killerHRP, fireCallback, abilityCfg)
     if not isMobile then
+        -- PC: just fire normally, no aimbot
         fireCallback()
         return
     end
     
-    -- MOBILE: hook OnClientInvoke, force Device="Mobile"
-    local spoofCF    = buildSpoofCF(myHRP, killerHRP, abilityCfg)
-    local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
-
+    -- MOBILE ONLY: hook OnClientInvoke
+    local spoofCF = buildSpoofCF(myHRP, killerHRP, abilityCfg)
+    local originalCB = NetworkRF and NetworkRF.OnClientInvoke
+    
     local origDevice = LocalPlayer:GetAttribute("Device")
     LocalPlayer:SetAttribute("Device", "Mobile")
-
+    
+    local hookActive = false
+    
     if NetworkRF then
+        hookActive = true
         NetworkRF.OnClientInvoke = function(reqName, ...)
             if reqName == "GetCameraCF" then
-                NetworkRF.OnClientInvoke = originalCB  -- one-shot restore
+                if hookActive then
+                    NetworkRF.OnClientInvoke = originalCB
+                    hookActive = false
+                end
                 return spoofCF
             end
             if originalCB then return originalCB(reqName, ...) end
         end
     end
-
-    -- Wait for Device attribute to replicate before firing
+    
     RunService.Heartbeat:Wait()
     RunService.Heartbeat:Wait()
-
+    
     fireCallback()
-
+    
     task.delay(1, function()
-        -- Safety restore if server never called GetCameraCF
-        if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
+        if NetworkRF and hookActive then
             NetworkRF.OnClientInvoke = originalCB
+            hookActive = false
         end
         LocalPlayer:SetAttribute("Device", origDevice)
     end)
@@ -287,95 +293,90 @@ end
 local function applyPatch(actor)
     if patched or not actor or not actor.Behavior then return end
     if not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then return end
-
+    
     crystalCB = actor.Behavior.Abilities.Crystal.Callback
-
+    
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
         
-        -- Handle normal charging - let user charge manually
-        if p290 == "Cancelled" then
-            return crystalCB(self, p290)
+        -- Let normal charging happen for all states except "Fire"
+        if p290 == "Cancelled" or not p290 then 
+            return crystalCB(self, p290) 
         end
         
-        -- Only auto-fire if aimbot is enabled and we're actually firing
-        if p290 and p290 == "Fire" then
-            -- This is the manual fire event - now apply aimbot if enabled
-            if enabled then
-                self.State.IsCrystalEquipped = true
-                Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
-                
-                local abilityCfg = self.Config.Crystal
-                
-                -- Create AimIndicator beam for visual feedback
-                local indicator     = nil
-                local indicatorConn = nil
-                
-                pcall(function()
-                    indicator = self.Behavior:lcl_createCrystalIndicator(self)
+        -- Only handle actual fire (when user releases after charging)
+        if p290 == "Fire" then
+            self.State.IsCrystalEquipped = true
+            Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
+            
+            local abilityCfg = self.Config.Crystal
+            
+            -- Create AimIndicator beam
+            local indicator = nil
+            local indicatorConn = nil
+            
+            pcall(function()
+                indicator = self.Behavior:lcl_createCrystalIndicator(self)
+            end)
+            
+            -- Drive beam each heartbeat
+            if indicator then
+                indicatorConn = RunService.Heartbeat:Connect(function()
+                    if not self.State.IsCrystalEquipped then
+                        if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                        return
+                    end
+                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                    if not myHRP then return end
+                    local killer = getNearestKiller(myHRP.Position)
+                    local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
+                    if not killerHRP then return end
+                    updateBeam(indicator, myHRP, killerHRP, abilityCfg)
                 end)
+            end
+            
+            task.spawn(function()
+                task.wait(0.1)
                 
-                -- Drive beam each heartbeat
-                if indicator then
-                    indicatorConn = RunService.Heartbeat:Connect(function()
-                        if not self.State.IsCrystalEquipped then
-                            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-                            return
-                        end
-                        local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                        if not myHRP then return end
-                        local killer    = getNearestKiller(myHRP.Position)
-                        local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-                        if not killerHRP then return end
-                        updateBeam(indicator, myHRP, killerHRP, abilityCfg)
-                    end)
+                local function doFire()
+                    Network:FireServerConnection(
+                        ("%sCrystalInput"):format(self.Player.Name),
+                        "REMOTE_EVENT",
+                        1
+                    )
                 end
                 
-                task.spawn(function()
-                    task.wait(0.1) -- Small delay for beam setup
-                    
-                    local function doFire()
-                        Network:FireServerConnection(
-                            ("%sCrystalInput"):format(self.Player.Name),
-                            "REMOTE_EVENT",
-                            1
-                        )
-                    end
-                    
-                    -- Apply aimbot on fire
-                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                    if myHRP then
-                        local killer    = getNearestKiller(myHRP.Position)
-                        local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-                        if killerHRP then
-                            doAimAndFire(myHRP, killerHRP, doFire, abilityCfg)
-                        else
-                            doFire()
-                        end
+                -- Always apply aimbot on mobile, no aimbot on PC
+                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                if myHRP then
+                    local killer = getNearestKiller(myHRP.Position)
+                    local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
+                    if killerHRP then
+                        doAimAndFire(myHRP, killerHRP, doFire, abilityCfg)
                     else
                         doFire()
                     end
-                    
-                    -- Cleanup beam
-                    task.wait(0.5)
-                    if indicatorConn then indicatorConn:Disconnect() end
-                    pcall(function()
-                        if self.Instances and self.Instances.CrystalIndicator then
-                            for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
-                            self.Instances.CrystalIndicator = nil
-                        end
-                    end)
+                else
+                    doFire()
+                end
+                
+                -- Cleanup beam
+                task.wait(0.5)
+                if indicatorConn then indicatorConn:Disconnect() end
+                pcall(function()
+                    if self.Instances and self.Instances.CrystalIndicator then
+                        for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
+                        self.Instances.CrystalIndicator = nil
+                    end
                 end)
-            else
-                return crystalCB(self, p290)
-            end
+            end)
         else
-            -- Let normal charging happen
+            -- For any other state (like charging), just pass through
             return crystalCB(self, p290)
         end
     end
-
+    
     patched = true
     print("[LoveThrow] Patched - manual charging enabled.")
 end
@@ -402,7 +403,7 @@ local Window = Rayfield:CreateWindow({
     Name = "LoveThrow",
     Icon = 0,
     LoadingTitle = "LoveThrow",
-    LoadingSubtitle = "by V1per",
+    LoadingSubtitle = "Manual Charging + Silent Aim",
     Theme = "DarkBlue",
     ConfigurationSaving = {
         Enabled = true,
@@ -426,7 +427,7 @@ end
 
 Tab:CreateParagraph({
     Title = "Platform",
-    Content = isMobile and "Mobile — Silent aim enabled" or "PC — Silent aim disabled (manual aim only)",
+    Content = isMobile and "Mobile — Silent aim enabled" or "PC — Manual aim only",
 })
 
 Tab:CreateToggle({
@@ -481,8 +482,8 @@ task.spawn(function()
         local currentActor = getLocalActor()
         if currentActor ~= lastActor then
             if lastActor ~= nil then
-                patched          = false
-                crystalCB        = nil
+                patched = false
+                crystalCB = nil
                 killerMotionData = {}
                 print("[LoveThrow] New round — resetting patch.")
             end

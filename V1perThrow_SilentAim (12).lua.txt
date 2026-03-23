@@ -29,14 +29,13 @@ local patched     = false
 local crystalCB   = nil
 local unloaded    = false
 
--- Always target head
 local HEAD_OFFSET = 1.5
 
 local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION = 2.0  -- Hold the crystal for 2 seconds before firing
+local HOLD_DURATION = 1.0
 
 local killerMotionData = {}
 
@@ -84,9 +83,9 @@ do
     Config.load()
 end
 
-enabled       = Config.get("enabled",      false)
-aimbotOn      = Config.get("aimbotOn",     false)
-PREDICTION    = Config.get("prediction",   PREDICTION)
+enabled       = Config.get("enabled",    false)
+aimbotOn      = Config.get("aimbotOn",   false)
+PREDICTION    = Config.get("prediction", PREDICTION)
 
 -- ════════════════════════════════════════
 --   KILLER TRACKING
@@ -188,15 +187,15 @@ end
 local function getThrowPhysics(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return nil end
-    
+
     local vel = getKillerVelocity(killerHRP)
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return nil end
-    
-    local hum       = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH      = hum and hum.HipHeight or 1.35
-    local v238      = (hipH + myHRP.Size.Y / 2) / 2
-    local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+
+    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH     = hum and hum.HipHeight or 1.35
+    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
     local predicted = killerHeadPos + vel * PREDICTION
     local target    = predicted
     local throwDir  = CFrame.lookAt(myHRP.Position, target) * CFrame.new(0, 0, -500)
@@ -208,14 +207,14 @@ end
 local function buildSpoofCF(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return Camera.CFrame end
-    
+
     local vel = getKillerVelocity(killerHRP)
     local v0  = abilityCfg.MaxSpeed
     local g   = abilityCfg.ProjectileArc
-    
+
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return Camera.CFrame end
-    
+
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
@@ -249,12 +248,12 @@ local function updateBeam(indicator, myHRP, killer, abilityCfg)
     if not indicator then return end
     local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
     if not spawnPos then return end
-    local cs0, cs1, startCF, endCF  = traceArc(gravity, initVel, spawnPos)
+    local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
     pcall(function()
-        indicator.Beam.CurveSize0         = cs0
-        indicator.Beam.CurveSize1         = cs1
-        indicator.AttachmentStart.CFrame  = myHRP.CFrame:Inverse() * startCF
-        indicator.AttachmentEnd.CFrame    = workspace.Terrain.CFrame:Inverse() * endCF
+        indicator.Beam.CurveSize0        = cs0
+        indicator.Beam.CurveSize1        = cs1
+        indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
+        indicator.AttachmentEnd.CFrame   = workspace.Terrain.CFrame:Inverse() * endCF
         indicator.Target:PivotTo(endCF)
     end)
 end
@@ -267,16 +266,18 @@ local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFuncti
 
 local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
     if isMobile then
+        -- FIX: use holdActive flag so spoof stays for the full HOLD_DURATION
         local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
         local origDevice = LocalPlayer:GetAttribute("Device")
+        local holdActive = true  -- keeps spoof alive across multiple server queries
+
         LocalPlayer:SetAttribute("Device", "Mobile")
 
         if NetworkRF then
             NetworkRF.OnClientInvoke = function(reqName, ...)
-                if reqName == "GetCameraCF" then
-                    NetworkRF.OnClientInvoke = originalCB
-                    return spoofCF
+                if reqName == "GetCameraCF" and holdActive then
+                    return spoofCF  -- stays spoofed until holdActive = false
                 end
                 if originalCB then return originalCB(reqName, ...) end
             end
@@ -286,7 +287,8 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         RunService.Heartbeat:Wait()
         fireCallback()
 
-        task.delay(0.1, function()
+        task.delay(HOLD_DURATION, function()
+            holdActive = false  -- release spoof after full 1 second
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -323,7 +325,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC - REMOVE GAME UI COMPLETELY
+--   PATCH LOGIC
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -342,40 +344,24 @@ local function applyPatch(actor)
     actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
         if RunService:IsServer() then return crystalCB(self, p290) end
         if not enabled then return crystalCB(self, p290) end
-        if p290 == "Cancelled" or not p290 then 
-            return crystalCB(self, p290) 
-        end
+        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- DON'T call original callback - this breaks the UI and makes it stuck at 0%
-        -- Instead, manually set up the crystal
-        
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
-        
-        -- Hide/remove any charge UI that appears
-        pcall(function()
-            -- Try to find and hide the charge UI elements
-            local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
-            if tempUI then
-                for _, child in ipairs(tempUI:GetChildren()) do
-                    if child:IsA("Frame") or child:IsA("ImageLabel") then
-                        child.Visible = false
-                    end
-                end
-            end
-        end)
 
-        -- Create beam indicator only
-        local indicator = nil
+        -- Override ChannelTime so the game's charge bar animates for exactly 2 seconds
+        local originalChannelTime = abilityCfg.ChannelTime
+        abilityCfg.ChannelTime = HOLD_DURATION
+
+        local indicator     = nil
         local indicatorConn = nil
 
         pcall(function()
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
-        -- Update beam during hold
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -390,11 +376,12 @@ local function applyPatch(actor)
             end)
         end
 
-        -- Hold the crystal for 2 seconds before firing
         task.spawn(function()
-            task.wait(HOLD_DURATION)  -- Hold for 2 seconds
-            
-            -- Clean up beam
+            task.wait(HOLD_DURATION)
+
+            -- Restore original channel time
+            abilityCfg.ChannelTime = originalChannelTime
+
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
                 if self.Instances and self.Instances.CrystalIndicator then
@@ -429,13 +416,12 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
-        
-        -- Don't return anything from original callback since we didn't call it
-        return nil
+
+        return crystalCB(self, p290)
     end
 
     patched = true
-    print("[LoveThrow] Patched - Holds crystal for 2 seconds, no charge UI, only beam.")
+    print("[LoveThrow] Patched.")
 end
 
 local function removePatch(actor)
@@ -486,9 +472,9 @@ local PlatformSection = MainTab:CreateSection("Platform")
 
 MainTab:CreateParagraph({
     Title = "Platform",
-    Content = isMobile 
+    Content = isMobile
         and "Mobile — OnClientInvoke spoof"
-        or "PC — cursor snapped to arc landing"
+        or  "PC — cursor snapped to arc landing"
 })
 
 local TogglesSection = MainTab:CreateSection("Toggles")
@@ -502,7 +488,7 @@ MainTab:CreateToggle({
         enabled = state
         Config.set("enabled", state)
         local actor = getLocalActor()
-        if enabled and not patched and actor then 
+        if enabled and not patched and actor then
             pcall(function() applyPatch(actor) end)
         end
         setStatus(enabled and "Active" or "Inactive")
@@ -519,7 +505,7 @@ MainTab:CreateToggle({
         Config.set("aimbotOn", state)
         if not aimbotOn then killerMotionData = {} end
         local actor = getLocalActor()
-        if aimbotOn and not patched and actor then 
+        if aimbotOn and not patched and actor then
             pcall(function() applyPatch(actor) end)
         end
     end,
@@ -591,11 +577,11 @@ task.spawn(function()
             end
             lastActor = currentActor
             if currentActor then
-                if enabled then 
+                if enabled then
                     pcall(function() applyPatch(currentActor) end)
                     setStatus("Active")
-                else 
-                    setStatus("Ready — toggle to activate") 
+                else
+                    setStatus("Ready — toggle to activate")
                 end
                 print("[LoveThrow] Actor found. Ready.")
             else

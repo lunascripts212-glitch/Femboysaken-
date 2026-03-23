@@ -1,5 +1,5 @@
 -- LoveThrow by LoveSaken Team
--- Run this as a LocalScript via your executor
+-- Simple version - just beam and custom UI, no fire hooks
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -248,23 +248,22 @@ local function updateBeam(indicator, myHRP, killer, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   AIM + FIRE
+--   AIM ASSIST FOR FIRE MOMENT
 -- ════════════════════════════════════════
 
 local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
+local function applyAimAssist(myHRP, killer, abilityCfg)
     if isMobile then
-        local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
+        local spoofCF = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
         local origDevice = LocalPlayer:GetAttribute("Device")
-        local holdActive = true
-
         LocalPlayer:SetAttribute("Device", "Mobile")
 
         if NetworkRF then
             NetworkRF.OnClientInvoke = function(reqName, ...)
-                if reqName == "GetCameraCF" and holdActive then
+                if reqName == "GetCameraCF" then
+                    NetworkRF.OnClientInvoke = originalCB
                     return spoofCF
                 end
                 if originalCB then return originalCB(reqName, ...) end
@@ -273,10 +272,9 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 
         RunService.Heartbeat:Wait()
         RunService.Heartbeat:Wait()
-        fireCallback()
 
-        task.delay(HOLD_DURATION, function()
-            holdActive = false
+        task.spawn(function()
+            task.wait(0.1)
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -284,33 +282,32 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         end)
     else
         local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
-        if not spawnPos then fireCallback(); return end
+        if spawnPos then
+            local landPos = spawnPos
+            local prev    = spawnPos
+            for t = 0.05, 5, 0.05 do
+                local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
+                local step = pos - prev
+                local hit  = workspace:Raycast(prev, step, arcParams)
+                if hit then landPos = hit.Position; break end
+                landPos = pos
+                prev    = pos
+            end
 
-        local landPos = spawnPos
-        local prev    = spawnPos
-        for t = 0.05, 5, 0.05 do
-            local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
-            local step = pos - prev
-            local hit  = workspace:Raycast(prev, step, arcParams)
-            if hit then landPos = hit.Position; break end
-            landPos = pos
-            prev    = pos
+            local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
+            if onScreen then
+                local realType = Camera.CameraType
+                Camera.CameraType = Enum.CameraType.Scriptable
+                pcall(mousemoveabs, screenPos.X + 15, screenPos.Y)
+                RunService.Heartbeat:Wait()
+                Camera.CameraType = realType
+            end
         end
-
-        local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
-        if onScreen then
-            local realType = Camera.CameraType
-            Camera.CameraType = Enum.CameraType.Scriptable
-            pcall(mousemoveabs, screenPos.X + 15, screenPos.Y)
-            RunService.Heartbeat:Wait()
-            Camera.CameraType = realType
-        end
-        fireCallback()
     end
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC - REMOVED INSTANT THROW
+--   PATCH LOGIC - No fire hooks, just visual
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -331,7 +328,7 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- Let the game handle everything naturally (no instant throw)
+        -- Let the game handle everything naturally
         local result = crystalCB(self, p290)
         
         self.State.IsCrystalEquipped = true
@@ -385,35 +382,14 @@ local function applyPatch(actor)
             end)
         end
 
-        -- Hook into the game's natural fire event for aim assist
-        local originalFire = self.Behavior.Abilities.Crystal.Fire
-        if originalFire and not self._aimHooked then
-            self._aimHooked = true
-            self.Behavior.Abilities.Crystal.Fire = function(crystalSelf, ...)
-                if aimbotOn and enabled then
-                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                    if myHRP then
-                        local killer = getNearestKiller(myHRP.Position)
-                        if killer then
-                            doAimAndFire(myHRP, killer, function() end, abilityCfg)
-                        end
-                    end
-                end
-                return originalFire(crystalSelf, ...)
-            end
-        end
-
-        -- Clean up when crystal is unequipped
-        local cleanupConn = nil
-        cleanupConn = self.Changed:Connect(function(prop)
+        -- Listen for when the crystal actually fires (natural game event)
+        local fireConnection = nil
+        fireConnection = self.Changed:Connect(function(prop)
             if prop == "State" and not self.State.IsCrystalEquipped then
+                -- Crystal was fired/unequipped naturally by the game
                 if fillConn then fillConn:Disconnect(); fillConn = nil end
                 if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-                if cleanupConn then cleanupConn:Disconnect() end
-                if self._aimHooked then
-                    self.Behavior.Abilities.Crystal.Fire = originalFire
-                    self._aimHooked = nil
-                end
+                if fireConnection then fireConnection:Disconnect() end
                 pcall(function()
                     if chargeUI and chargeUI.Parent then
                         chargeUI:Destroy()
@@ -432,7 +408,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[LoveThrow] Patched - Instant throw removed, natural game timing preserved.")
+    print("[LoveThrow] Patched - Visual only, no fire interference.")
 end
 
 local function removePatch(actor)
@@ -442,10 +418,6 @@ local function removePatch(actor)
     if crystalCB then
         actor.Behavior.Abilities.Crystal.Callback = crystalCB
         crystalCB = nil
-    end
-    if actor.Behavior.Abilities.Crystal.Fire and actor._aimHooked then
-        actor.Behavior.Abilities.Crystal.Fire = nil
-        actor._aimHooked = nil
     end
     patched = false
     print("[LoveThrow] Patch removed.")

@@ -1,5 +1,4 @@
--- LoveThrow (WindUI version)
--- Silent aim to killer head — manual throw only
+-- LoveThrow v2 - Manual throw, silent head aim (tuned for March 2026 Forsaken patches)
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -15,254 +14,208 @@ local Util    = require(ReplicatedStorage.Modules.Util)
 
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
--- Config
-local PREDICTION = 0.135  -- lead time in seconds
+-- Tuned for current patches
+local PREDICTION = 0.18   -- increased lead
+local HEAD_OFFSET = 1.65  -- more accurate head height
 
--- ────────────────────────────────────────────────
 -- WindUI
--- ────────────────────────────────────────────────
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
 local Window = WindUI:CreateWindow({
     Title = "LoveThrow",
     Icon = "heart",
-    Author = "silent crystal head aim",
+    Author = "manual head silent aim",
     Folder = "LoveThrow",
     Theme = "Dark",
 })
 
-if not isMobile then
-    Window:SetToggleKey(Enum.KeyCode.RightShift)
-end
+if not isMobile then Window:SetToggleKey(Enum.KeyCode.RightShift) end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "crosshair" })
 
-Tab:Paragraph({
-    Title = "LoveThrow",
-    Content = isMobile 
-        and "Mobile — spoofs GetCameraCF to aim at killer head" 
-        or "PC — relies on server trusting client camera direction"
-})
+Tab:Paragraph({ Title = "Info", Content = isMobile and "Mobile spoof active" or "PC nudge + spoof fallback" })
 
 local EnabledToggle = Tab:Toggle({
     Title = "Enable Silent Aim",
-    Desc = "When you throw crystal, aims silently at nearest killer's head",
+    Desc = "Aims at killer HEAD when YOU throw crystal",
     Icon = "target",
     Value = true,
-    Callback = function(state)
-        _G.LoveThrow_Enabled = state
-    end,
+    Callback = function(v) _G.LT_Enabled = v; print("[LT] Enabled:", v) end,
 })
 
 Tab:Slider({
     Title = "Prediction",
-    Desc = "How far ahead to lead the killer's movement",
     Step = 0.005,
-    Value = { Min = 0, Max = 0.4, Default = PREDICTION },
-    Callback = function(v)
-        PREDICTION = v
-    end,
+    Value = { Min = 0, Max = 0.5, Default = PREDICTION },
+    Callback = function(v) PREDICTION = v end,
 })
-
-Tab:Divider()
 
 Tab:Button({
     Title = "Unload",
-    Desc = "Remove patch and destroy UI",
     Icon = "power",
     Callback = function()
-        _G.LoveThrow_Enabled = false
-        _G.LoveThrow_Unloaded = true
+        _G.LT_Enabled = false
+        _G.LT_Unloaded = true
         pcall(removePatch)
-        WindUI:Notify({ Title = "LoveThrow", Content = "Unloaded.", Icon = "check", Duration = 3 })
-        task.delay(0.4, function() Window:Destroy() end)
+        Window:Destroy()
     end,
 })
 
--- ────────────────────────────────────────────────
--- Killer tracking
--- ────────────────────────────────────────────────
-local killerMotionData = {}
+-- Utils
+local motion = {}
 
-local function getKillerVelocity(hrp)
-    local now = tick()
-    local pos = hrp.Position
-    local data = killerMotionData[hrp] or {lastPos = pos, lastTime = now, velocity = Vector3.zero}
-    killerMotionData[hrp] = data
-
-    local dt = now - data.lastTime
+local function getVel(hrp)
+    local t = tick()
+    local d = motion[hrp] or {p=hrp.Position, tm=t, v=Vector3.zero}
+    motion[hrp] = d
+    local dt = t - d.tm
     if dt > 0 then
-        data.velocity = (pos - data.lastPos) / dt
-        data.lastPos = pos
-        data.lastTime = now
+        d.v = (hrp.Position - d.p) / dt
+        d.p = hrp.Position
+        d.tm = t
     end
-    return data.velocity
+    return d.v
 end
 
-local function getNearestKiller(fromPos)
-    local killers = workspace:FindFirstChild("Players") 
-        and workspace.Players:FindFirstChild("Killers")
-    if not killers then return nil end
-
-    local nearest, best = nil, math.huge
-    for _, model in killers:GetChildren() do
-        local hrp = model:FindFirstChild("HumanoidRootPart")
-        local hum = model:FindFirstChildOfClass("Humanoid")
-        if hrp and hum and hum.Health > 0 then
-            local dist = (hrp.Position - fromPos).Magnitude
-            if dist < best then
-                best = dist
-                nearest = model
-            end
+local function nearestKiller(pos)
+    local f = workspace.Players and workspace.Players.Killers
+    if not f then return end
+    local n, dst = nil, math.huge
+    for _, m in f:GetChildren() do
+        local h = m.HumanoidRootPart
+        local hu = m:FindFirstChildOfClass("Humanoid")
+        if h and hu and hu.Health > 0 then
+            local d = (h.Position - pos).Magnitude
+            if d < dst then dst, n = d, m end
         end
     end
-    return nearest
+    return n
 end
 
--- ────────────────────────────────────────────────
--- Ballistic camera spoof (head aim)
--- ────────────────────────────────────────────────
-local function buildSpoofCF(myHRP, killerHRP, abilityCfg)
-    local vel = getKillerVelocity(killerHRP)
-    local v0 = abilityCfg.MaxSpeed
-    local g = abilityCfg.ProjectileArc
+-- Head-aim spoof CF
+local function spoofCF(myHRP, kHRP, cfg)
+    local v = getVel(kHRP)
+    local v0, g = cfg.MaxSpeed, cfg.ProjectileArc
+    local hip = (myHRP.Parent:FindFirstChildOfClass("Humanoid") or {}).HipHeight or 1.35
+    local yOff = (hip + myHRP.Size.Y/2)/2
+    local sp = myHRP.Position + Vector3.new(0,yOff,0)
 
-    local hum = myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH = hum and hum.HipHeight or 1.35
-    local spawnY = (hipH + myHRP.Size.Y / 2) / 2
-    local spawnPos = myHRP.Position + Vector3.new(0, spawnY, 0)
+    local pred = kHRP.Position + v * PREDICTION
+    local tgt = pred + Vector3.new(0, HEAD_OFFSET, 0)
 
-    local predicted = killerHRP.Position + vel * PREDICTION
-    local target = predicted + Vector3.new(0, 1.4, 0)  -- head approx
+    local del = tgt - sp
+    local flat = Vector3.new(del.X,0,del.Z)
+    local dx, dy = flat.Magnitude, del.Y
 
-    local delta = target - spawnPos
-    local flat = Vector3.new(delta.X, 0, delta.Z)
-    local dx = flat.Magnitude
-    local dy = delta.Y
+    if dx < 0.1 then return CFrame.lookAt(Camera.CFrame.Position, Camera.CFrame.Position + (dy>=0 and Vector3.yAxis or -Vector3.yAxis)) end
 
-    if dx < 0.1 then
-        local dir = dy >= 0 and Vector3.yAxis or -Vector3.yAxis
-        return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
-    end
+    local vv = v0*v0
+    local disc = vv*vv - g*(g*dx*dx + 2*dy*vv)
+    local tanT = disc<0 and dy/dx or (vv - math.sqrt(disc))/(g*dx)
 
-    local flatUnit = flat.Unit
-    local vv = v0 * v0
-    local disc = vv * vv - g * (g * dx * dx + 2 * dy * vv)
-    local tanTheta = (disc < 0) and (dy / dx) or ((vv - math.sqrt(disc)) / (g * dx))
+    local alpha = math.atan2(3*tanT-1, 3+tanT)
 
-    local alpha = math.atan2(3 * tanTheta - 1, 3 + tanTheta)
-
-    local yaw = CFrame.lookAt(Camera.CFrame.Position, Camera.CFrame.Position + flatUnit)
+    local yaw = CFrame.lookAt(Camera.CFrame.Position, Camera.CFrame.Position + flat.Unit)
     return yaw * CFrame.Angles(alpha, 0, 0)
 end
 
--- ────────────────────────────────────────────────
--- Patch crystal ability (only spoof on actual fire)
--- ────────────────────────────────────────────────
-local patched = false
-local originalCB
+-- Patch
+local patched, origCB = false, nil
 
-local function getLocalActor()
-    for _, a in Actors.CurrentActors do
-        if a.Player == LocalPlayer then return a end
-    end
-    return nil
+local function actor()
+    for _,a in Actors.CurrentActors do if a.Player == LocalPlayer then return a end end
 end
 
-local function applyPatch(actor)
-    if patched or not actor or not actor.Behavior or not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then
-        return
-    end
+local function applyPatch(act)
+    if patched or not act or not act.Behavior?.Abilities?.Crystal then return end
 
-    local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
+    local RF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-    originalCB = actor.Behavior.Abilities.Crystal.Callback
+    origCB = act.Behavior.Abilities.Crystal.Callback
 
-    actor.Behavior.Abilities.Crystal.Callback = function(self, input)
-        if RunService:IsServer() then
-            return originalCB(self, input)
-        end
+    act.Behavior.Abilities.Crystal.Callback = function(self, inp)
+        if RunService:IsServer() then return origCB(self, inp) end
 
-        -- Let normal equip / channel / charge happen
-        local res = originalCB(self, input)
+        local res = origCB(self, inp)
 
-        -- Only spoof when user actually fires (input == 1)
-        if input == 1 and _G.LoveThrow_Enabled then
-            local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-            if not myHRP then return res end
+        if inp == 1 and _G.LT_Enabled then  -- FIRE input
+            local hrp = self.Rig?.HumanoidRootPart
+            if not hrp then return res end
 
-            local killer = getNearestKiller(myHRP.Position)
-            local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-            if not killerHRP then return res end
+            local kil = nearestKiller(hrp.Position)
+            local khrp = kil?.HumanoidRootPart
+            if not khrp then print("[LT] No killer") return res end
 
-            if isMobile and NetworkRF then
-                local origInvoke = getcallbackvalue and getcallbackvalue(NetworkRF, "OnClientInvoke")
-                local origDev = LocalPlayer:GetAttribute("Device") or "PC"
+            print("[LT] Firing spoof - pred:", PREDICTION)
+
+            local spoof = spoofCF(hrp, khrp, self.Config.Crystal)
+
+            if isMobile and RF then
+                local oldInvoke = getcallbackvalue and getcallbackvalue(RF, "OnClientInvoke") or RF.OnClientInvoke
+                local oldDev = LocalPlayer:GetAttribute("Device") or "PC"
 
                 LocalPlayer:SetAttribute("Device", "Mobile")
+                task.wait(0.15)
 
-                local hook = function(name, ...)
-                    if name == "GetCameraCF" then
-                        NetworkRF.OnClientInvoke = origInvoke
-                        return buildSpoofCF(myHRP, killerHRP, self.Config.Crystal)
+                RF.OnClientInvoke = function(n, ...)
+                    if n == "GetCameraCF" then
+                        print("[LT] Mobile GetCameraCF spoofed")
+                        RF.OnClientInvoke = oldInvoke
+                        return spoof
                     end
-                    return origInvoke and origInvoke(name, ...) or nil
+                    return oldInvoke and oldInvoke(n, ...) 
                 end
-                NetworkRF.OnClientInvoke = hook
 
-                -- Safety restore
-                task.delay(2, function()
-                    if NetworkRF and getcallbackvalue and getcallbackvalue(NetworkRF, "OnClientInvoke") == hook then
-                        NetworkRF.OnClientInvoke = origInvoke
+                task.delay(4, function()
+                    if RF and (getcallbackvalue and getcallbackvalue(RF, "OnClientInvoke") or RF.OnClientInvoke) ~= oldInvoke then
+                        RF.OnClientInvoke = oldInvoke
                     end
-                    LocalPlayer:SetAttribute("Device", origDev)
+                    LocalPlayer:SetAttribute("Device", oldDev)
                 end)
+            else
+                -- PC: brief scriptable + CFrame set (minimal visual, blocks input flick)
+                local oldCam = Camera.CameraType
+                Camera.CameraType = Enum.CameraType.Scriptable
+                local oldCF = Camera.CFrame
+                Camera.CFrame = CFrame.new(oldCF.Position, spoof.Position)  -- direction only
+                RunService.Heartbeat:Wait()
+                Camera.CFrame = oldCF  -- restore pos/rot if needed
+                Camera.CameraType = oldCam
+                print("[LT] PC camera nudge")
             end
-            -- PC: no extra spoof needed if server uses client camera (common in these games)
         end
-
         return res
     end
 
     patched = true
-    print("[LoveThrow] Patched — manual throw with silent head aim")
-    WindUI:Notify({ Title = "LoveThrow", Content = "Patched — throw manually", Duration = 3.5 })
+    WindUI:Notify({Title="LoveThrow", Content="Patched - manual throw → head aim", Duration=4})
 end
 
 local function removePatch()
-    if not patched then return end
-    local actor = getLocalActor()
-    if actor and actor.Behavior and actor.Behavior.Abilities and actor.Behavior.Abilities.Crystal and originalCB then
-        actor.Behavior.Abilities.Crystal.Callback = originalCB
+    local a = actor()
+    if patched and a?.Behavior?.Abilities?.Crystal and origCB then
+        a.Behavior.Abilities.Crystal.Callback = origCB
     end
     patched = false
 end
 
--- ────────────────────────────────────────────────
--- Actor / round watcher
--- ────────────────────────────────────────────────
-_G.LoveThrow_Enabled = true
-_G.LoveThrow_Unloaded = false
+-- Loop
+_G.LT_Enabled = true
+_G.LT_Unloaded = false
 
 task.spawn(function()
-    local lastActor = nil
-    while not _G.LoveThrow_Unloaded do
+    local prev = nil
+    while not _G.LT_Unloaded do
         task.wait(0.6)
-        local actor = getLocalActor()
-
-        if actor ~= lastActor then
-            killerMotionData = {}
-            if lastActor then
-                removePatch()
-                WindUI:Notify({ Title = "LoveThrow", Content = "New round — repatching", Duration = 3 })
-            end
-            lastActor = actor
-            if actor then
-                applyPatch(actor)
-            end
+        local cur = actor()
+        if cur ~= prev then
+            motion = {}
+            if prev then removePatch() WindUI:Notify({Title="Round change", Content="Repatching...", Duration=2}) end
+            prev = cur
+            if cur then applyPatch(cur) end
         end
     end
     removePatch()
 end)
 
-print("[LoveThrow] Loaded — WindUI version — charge & throw yourself")
+print("[LoveThrow] Ready - throw crystal manually, check console when firing")

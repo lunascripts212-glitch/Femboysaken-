@@ -409,6 +409,8 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
+
+        return crystalCB(self, p290)
     end
 
     patched = true

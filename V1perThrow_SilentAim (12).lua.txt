@@ -29,13 +29,14 @@ local patched     = false
 local crystalCB   = nil
 local unloaded    = false
 
+-- Always target head
 local HEAD_OFFSET = 1.5
 
 local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION = 1.0
+local HOLD_DURATION = 1.0  -- Fixed 1 second hold
 
 local killerMotionData = {}
 
@@ -83,9 +84,9 @@ do
     Config.load()
 end
 
-enabled       = Config.get("enabled",    false)
-aimbotOn      = Config.get("aimbotOn",   false)
-PREDICTION    = Config.get("prediction", PREDICTION)
+enabled       = Config.get("enabled",      false)
+aimbotOn      = Config.get("aimbotOn",     false)
+PREDICTION    = Config.get("prediction",   PREDICTION)
 
 -- ════════════════════════════════════════
 --   KILLER TRACKING
@@ -187,15 +188,15 @@ end
 local function getThrowPhysics(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return nil end
-
+    
     local vel = getKillerVelocity(killerHRP)
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return nil end
-
-    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH     = hum and hum.HipHeight or 1.35
-    local v238     = (hipH + myHRP.Size.Y / 2) / 2
-    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    
+    local hum       = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH      = hum and hum.HipHeight or 1.35
+    local v238      = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
     local predicted = killerHeadPos + vel * PREDICTION
     local target    = predicted
     local throwDir  = CFrame.lookAt(myHRP.Position, target) * CFrame.new(0, 0, -500)
@@ -207,14 +208,14 @@ end
 local function buildSpoofCF(myHRP, killer, abilityCfg)
     local killerHRP = killer:FindFirstChild("HumanoidRootPart")
     if not killerHRP then return Camera.CFrame end
-
+    
     local vel = getKillerVelocity(killerHRP)
     local v0  = abilityCfg.MaxSpeed
     local g   = abilityCfg.ProjectileArc
-
+    
     local killerHeadPos = getKillerHeadPosition(killer)
     if not killerHeadPos then return Camera.CFrame end
-
+    
     local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
@@ -248,12 +249,12 @@ local function updateBeam(indicator, myHRP, killer, abilityCfg)
     if not indicator then return end
     local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
     if not spawnPos then return end
-    local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
+    local cs0, cs1, startCF, endCF  = traceArc(gravity, initVel, spawnPos)
     pcall(function()
-        indicator.Beam.CurveSize0        = cs0
-        indicator.Beam.CurveSize1        = cs1
-        indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
-        indicator.AttachmentEnd.CFrame   = workspace.Terrain.CFrame:Inverse() * endCF
+        indicator.Beam.CurveSize0         = cs0
+        indicator.Beam.CurveSize1         = cs1
+        indicator.AttachmentStart.CFrame  = myHRP.CFrame:Inverse() * startCF
+        indicator.AttachmentEnd.CFrame    = workspace.Terrain.CFrame:Inverse() * endCF
         indicator.Target:PivotTo(endCF)
     end)
 end
@@ -266,18 +267,16 @@ local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFuncti
 
 local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
     if isMobile then
-        -- FIX: use holdActive flag so spoof stays for the full HOLD_DURATION
         local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
         local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
         local origDevice = LocalPlayer:GetAttribute("Device")
-        local holdActive = true  -- keeps spoof alive across multiple server queries
-
         LocalPlayer:SetAttribute("Device", "Mobile")
 
         if NetworkRF then
             NetworkRF.OnClientInvoke = function(reqName, ...)
-                if reqName == "GetCameraCF" and holdActive then
-                    return spoofCF  -- stays spoofed until holdActive = false
+                if reqName == "GetCameraCF" then
+                    NetworkRF.OnClientInvoke = originalCB
+                    return spoofCF
                 end
                 if originalCB then return originalCB(reqName, ...) end
             end
@@ -288,7 +287,6 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         fireCallback()
 
         task.delay(HOLD_DURATION, function()
-            holdActive = false  -- release spoof after full 1 second
             if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                 NetworkRF.OnClientInvoke = originalCB
             end
@@ -346,18 +344,21 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
+        -- Let the game handle the crystal equipping and UI naturally
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        local indicator     = nil
+        -- Create beam indicator only - no UI modifications
+        local indicator = nil
         local indicatorConn = nil
 
         pcall(function()
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
+        -- Only add beam tracking
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -372,9 +373,11 @@ local function applyPatch(actor)
             end)
         end
 
+        -- Wait for the game's natural channel time
         task.spawn(function()
-            task.wait(2.0)
+            task.wait(abilityCfg.ChannelTime + 0.05)
 
+            -- Clean up beam
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
                 if self.Instances and self.Instances.CrystalIndicator then
@@ -409,7 +412,8 @@ local function applyPatch(actor)
                 doFire()
             end
         end)
-
+        
+        -- Call the original callback to let the game handle its UI and animations
         return crystalCB(self, p290)
     end
 
@@ -465,9 +469,9 @@ local PlatformSection = MainTab:CreateSection("Platform")
 
 MainTab:CreateParagraph({
     Title = "Platform",
-    Content = isMobile
+    Content = isMobile 
         and "Mobile — OnClientInvoke spoof"
-        or  "PC — cursor snapped to arc landing"
+        or "PC — cursor snapped to arc landing"
 })
 
 local TogglesSection = MainTab:CreateSection("Toggles")
@@ -481,7 +485,7 @@ MainTab:CreateToggle({
         enabled = state
         Config.set("enabled", state)
         local actor = getLocalActor()
-        if enabled and not patched and actor then
+        if enabled and not patched and actor then 
             pcall(function() applyPatch(actor) end)
         end
         setStatus(enabled and "Active" or "Inactive")
@@ -498,7 +502,7 @@ MainTab:CreateToggle({
         Config.set("aimbotOn", state)
         if not aimbotOn then killerMotionData = {} end
         local actor = getLocalActor()
-        if aimbotOn and not patched and actor then
+        if aimbotOn and not patched and actor then 
             pcall(function() applyPatch(actor) end)
         end
     end,
@@ -570,11 +574,11 @@ task.spawn(function()
             end
             lastActor = currentActor
             if currentActor then
-                if enabled then
+                if enabled then 
                     pcall(function() applyPatch(currentActor) end)
                     setStatus("Active")
-                else
-                    setStatus("Ready — toggle to activate")
+                else 
+                    setStatus("Ready — toggle to activate") 
                 end
                 print("[LoveThrow] Actor found. Ready.")
             else

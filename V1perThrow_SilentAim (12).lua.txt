@@ -310,7 +310,7 @@ local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   PATCH LOGIC - NO GAME UI AT ALL
+--   PATCH LOGIC - Call original for animations, hide UI
 -- ════════════════════════════════════════
 
 local function getLocalActor()
@@ -331,7 +331,21 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
-        -- DON'T call original callback - that creates the game's UI
+        -- Call original callback FIRST to trigger animations
+        local result = crystalCB(self, p290)
+        
+        -- Immediately hide the game's charge UI
+        pcall(function()
+            local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
+            if tempUI then
+                for _, child in ipairs(tempUI:GetChildren()) do
+                    if child:IsA("Frame") and child.Name ~= "LoveThrowUI" then
+                        child.Visible = false
+                        child.Enabled = false
+                    end
+                end
+            end
+        end)
         
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
@@ -431,12 +445,11 @@ local function applyPatch(actor)
             end
         end)
         
-        -- Return nil because we didn't call original
-        return nil
+        return result
     end
 
     patched = true
-    print("[LoveThrow] Patched - Only your custom UI shows, holds 2 seconds.")
+    print("[LoveThrow] Patched - Animations play, game UI hidden, custom UI shows, holds 2 seconds.")
 end
 
 local function removePatch(actor)

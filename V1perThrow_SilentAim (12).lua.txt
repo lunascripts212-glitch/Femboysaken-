@@ -37,7 +37,6 @@ local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
 local HOLD_DURATION = 1.0  -- Fixed 1 second hold
-local CHANNEL_TIME = 1.0   -- Fixed 1 second channel time
 
 local killerMotionData = {}
 
@@ -357,10 +356,7 @@ local function applyPatch(actor)
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
-        -- Override channel time to 1 second
-        local originalChannelTime = abilityCfg.ChannelTime
-        abilityCfg.ChannelTime = CHANNEL_TIME
-
+        -- Show ChargeUI at 100% / green (always full charge)
         pcall(function()
             local chargeUI = abilityCfg.ChargeUI:Clone()
             chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
@@ -383,8 +379,9 @@ local function applyPatch(actor)
             end)
         end
 
+        -- Use original channel time from the game
         task.spawn(function()
-            task.wait(CHANNEL_TIME + 0.05)
+            task.wait(abilityCfg.ChannelTime + 0.05)
 
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
             pcall(function()
@@ -399,9 +396,6 @@ local function applyPatch(actor)
                     self._patchChargeUI = nil
                 end
             end)
-
-            -- Restore original channel time
-            abilityCfg.ChannelTime = originalChannelTime
 
             if not (self.State.IsCrystalEquipped and enabled) then return end
 

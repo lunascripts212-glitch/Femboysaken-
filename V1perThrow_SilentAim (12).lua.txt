@@ -378,7 +378,7 @@ local function applyPatch(actor)
 
         -- Wait for channel time then fire
         task.spawn(function()
-            task.wait(abilityCfg.ChannelTime + 0.05)
+            task.wait(1.05)
 
             -- Clean up beam
             if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end

@@ -339,11 +339,27 @@ local function applyPatch(actor)
 
         local abilityCfg = self.Config.Crystal
 
-        -- ── Animated charge bar: fills from 0% red to 100% green over HOLD_DURATION ──
+        -- Find and hide the game's original charge UI immediately
+        local gameChargeUI = nil
+        pcall(function()
+            local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
+            if tempUI then
+                for _, child in ipairs(tempUI:GetChildren()) do
+                    if child:IsA("Frame") and child.Name ~= "LoveThrowUI" then
+                        gameChargeUI = child
+                        child.Visible = false
+                        child.Enabled = false
+                    end
+                end
+            end
+        end)
+
+        -- ── Our custom animated charge bar ──
         local chargeUI = nil
         local fillConn = nil
         pcall(function()
             chargeUI = abilityCfg.ChargeUI:Clone()
+            chargeUI.Name = "LoveThrowUI"
             chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
             chargeUI.Bar.Percent.Text = "0%"
             chargeUI.Bar.ImageColor3  = Color3.new(1, 0, 0)
@@ -388,10 +404,27 @@ local function applyPatch(actor)
         task.spawn(function()
             task.wait(HOLD_DURATION)
 
+            -- Destroy our custom UI
             if fillConn then fillConn:Disconnect(); fillConn = nil end
             pcall(function()
                 if chargeUI and chargeUI.Parent then
                     chargeUI:Destroy(); chargeUI = nil
+                end
+            end)
+
+            -- Also destroy/hide the game's UI so it doesn't stay stuck
+            pcall(function()
+                if gameChargeUI and gameChargeUI.Parent then
+                    gameChargeUI:Destroy()
+                end
+                -- Also try to find and destroy any other charge UI elements
+                local tempUI = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI")
+                if tempUI then
+                    for _, child in ipairs(tempUI:GetChildren()) do
+                        if child:IsA("Frame") and child ~= chargeUI then
+                            child:Destroy()
+                        end
+                    end
                 end
             end)
 
@@ -434,7 +467,7 @@ local function applyPatch(actor)
     end
 
     patched = true
-    print("[LoveThrow] Patched - Animations play, custom UI overlays, holds 2 seconds.")
+    print("[LoveThrow] Patched - Game UI hidden, custom UI shows, holds 2 seconds.")
 end
 
 local function removePatch(actor)

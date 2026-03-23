@@ -1,4 +1,4 @@
--- V1perThrow w/ WindUI
+-- LoveThrow w/ Rayfield
 -- Run this as a LocalScript via your executor
 
 local Players           = game:GetService("Players")
@@ -23,23 +23,17 @@ local isMobile = UserInputService.TouchEnabled and not UserInputService.Keyboard
 --   RUNTIME STATE
 -- ════════════════════════════════════════
 
-local enabled     = false
-local aimbotOn    = false
-local patched     = false
-local crystalCB   = nil
-local unloaded    = false
-
-local AIM_OFFSET     = -0.3
-local AIM_OFFSET_MIN = -5.0
-local AIM_OFFSET_MAX =  5.0
+local enabled   = false
+local aimbotOn  = false
+local patched   = false
+local crystalCB = nil
+local unloaded  = false
 
 local PREDICTION     = 0.6
 local PREDICTION_MIN = 0.0
 local PREDICTION_MAX = 1.0
 
-local HOLD_DURATION     = 0.9
-local HOLD_DURATION_MIN = 0.3
-local HOLD_DURATION_MAX = 2.0
+local HEAD_OFFSET = 1.5  -- above HRP to approximate head
 
 local killerMotionData = {}
 
@@ -56,7 +50,7 @@ local fs = {
 }
 local Config = {}
 do
-    local DIR  = "V1perThrow"
+    local DIR  = "LoveThrow"
     local FILE = DIR .. "/config.json"
     local hs   = game:GetService("HttpService")
     local function prep()
@@ -87,11 +81,9 @@ do
     Config.load()
 end
 
-enabled       = Config.get("enabled",      false)
-aimbotOn      = Config.get("aimbotOn",     false)
-AIM_OFFSET    = Config.get("aimOffset",    AIM_OFFSET)
-PREDICTION    = Config.get("prediction",   PREDICTION)
-HOLD_DURATION = Config.get("holdDuration", HOLD_DURATION)
+enabled    = Config.get("enabled",    false)
+aimbotOn   = Config.get("aimbotOn",   false)
+PREDICTION = Config.get("prediction", PREDICTION)
 
 -- ════════════════════════════════════════
 --   KILLER TRACKING
@@ -131,7 +123,7 @@ local function getNearestKiller(fromPos)
 end
 
 -- ════════════════════════════════════════
---   BALLISTIC ARC MATH (for beam + mobile spoof)
+--   BALLISTIC ARC MATH
 -- ════════════════════════════════════════
 
 local function computeArcCurve(gravity, initVel, origin, impactTime)
@@ -178,22 +170,21 @@ local function traceArc(gravity, initVel, origin)
     return computeArcCurve(gravity, initVel, origin, hitTime)
 end
 
--- Compute spawnPos + initVel for a given HRP→target throw
 local function getThrowPhysics(myHRP, killerHRP, abilityCfg)
-    local vel       = getKillerVelocity(killerHRP)
-    local hum       = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-    local hipH      = hum and hum.HipHeight or 1.35
-    local v238      = (hipH + myHRP.Size.Y / 2) / 2
-    local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    local vel      = getKillerVelocity(killerHRP)
+    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH     = hum and hum.HipHeight or 1.35
+    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    -- Always aim at head
     local predicted = killerHRP.Position + vel * PREDICTION
-    local target    = predicted + Vector3.new(0, AIM_OFFSET, 0)
+    local target    = predicted + Vector3.new(0, HEAD_OFFSET, 0)
     local throwDir  = CFrame.lookAt(myHRP.Position, target) * CFrame.new(0, 0, -500)
     local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
     local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
     return spawnPos, initVel, gravity, target
 end
 
--- Ballistic-solved camera CFrame (UpVector/3 corrected) — used for mobile spoof
 local function buildSpoofCF(myHRP, killerHRP, abilityCfg)
     local vel      = getKillerVelocity(killerHRP)
     local v0       = abilityCfg.MaxSpeed
@@ -202,8 +193,9 @@ local function buildSpoofCF(myHRP, killerHRP, abilityCfg)
     local hipH     = hum and hum.HipHeight or 1.35
     local v238     = (hipH + myHRP.Size.Y / 2) / 2
     local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    -- Always aim at head
     local predicted = killerHRP.Position + vel * PREDICTION
-    local target    = predicted + Vector3.new(0, AIM_OFFSET, 0)
+    local target    = predicted + Vector3.new(0, HEAD_OFFSET, 0)
     local delta     = target - spawnPos
     local flatV     = Vector3.new(delta.X, 0, delta.Z)
     local dx        = flatV.Magnitude
@@ -241,98 +233,45 @@ local function updateBeam(indicator, myHRP, killerHRP, abilityCfg)
 end
 
 -- ════════════════════════════════════════
---   AIM + FIRE — ZERO CAMERA MANIPULATION
---
---   PC:
---     GetPlayerMousePosition raycasts from the camera through the
---     screen-space cursor position. We need to move the cursor to
---     where the arc lands on screen.
---
---     mousemoveabs snaps the cursor BUT shiftlock feeds the delta to
---     the camera, causing a flick. Fix: set CameraType=Scriptable
---     for a single frame ONLY (prevents the mouse delta from rotating
---     the camera). CFrame is NEVER touched. Camera visually stays put.
---
---   Mobile:
---     Server calls GetCameraCF (OnClientInvoke) and computes direction
---     from LookVector+UpVector/3. We hook OnClientInvoke to return
---     a ballistic-solved CFrame. Device="Mobile" forces the server
---     to take this branch. Camera is NEVER touched.
+--   SILENT AIM (mobile only — fires on YOUR input)
 -- ════════════════════════════════════════
 
 local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
 
-local function doAimAndFire(myHRP, killerHRP, fireCallback, abilityCfg)
-    if isMobile then
-        -- ── MOBILE: hook OnClientInvoke, force Device="Mobile" ───────
-        local spoofCF    = buildSpoofCF(myHRP, killerHRP, abilityCfg)
-        local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
-
-        local origDevice = LocalPlayer:GetAttribute("Device")
-        LocalPlayer:SetAttribute("Device", "Mobile")
-
-        if NetworkRF then
-            NetworkRF.OnClientInvoke = function(reqName, ...)
-                if reqName == "GetCameraCF" then
-                    NetworkRF.OnClientInvoke = originalCB  -- one-shot restore
-                    return spoofCF
-                end
-                if originalCB then return originalCB(reqName, ...) end
-            end
-        end
-
-        -- Wait for Device attribute to replicate before firing
-        RunService.Heartbeat:Wait()
-        RunService.Heartbeat:Wait()
-
+local function doSilentAim(myHRP, killerHRP, fireCallback, abilityCfg)
+    -- Only hooked on mobile; on PC the player's own cursor direction is used
+    if not isMobile then
         fireCallback()
-
-        task.delay(HOLD_DURATION, function()
-            -- Safety restore if server never called GetCameraCF
-            if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
-                NetworkRF.OnClientInvoke = originalCB
-            end
-            LocalPlayer:SetAttribute("Device", origDevice)
-        end)
-
-    else
-        -- ── PC: mousemoveabs to arc landing screen position ──────────
-        -- Project arc landing point onto screen, snap cursor there.
-        -- CameraType=Scriptable for ONE heartbeat only to prevent
-        -- shiftlock from rotating the camera during mousemoveabs.
-        -- CFrame is NEVER set — camera stays visually identical.
-        local _, initVel, gravity, _ = getThrowPhysics(myHRP, killerHRP, abilityCfg)
-        local spawnPos               = (function()
-            local hum  = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-            local hipH = hum and hum.HipHeight or 1.35
-            return myHRP.CFrame.Position + Vector3.new(0, (hipH + myHRP.Size.Y/2)/2, 0)
-        end)()
-
-        -- Walk arc to find landing world position
-        local landPos = spawnPos
-        local prev    = spawnPos
-        for t = 0.05, 5, 0.05 do
-            local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
-            local step = pos - prev
-            local hit  = workspace:Raycast(prev, step, arcParams)
-            if hit then landPos = hit.Position; break end
-            landPos = pos
-            prev    = pos
-        end
-
-        local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
-
-        if onScreen then
-            -- Scriptable for 1 frame only: blocks shiftlock mouse→camera delta
-            local realType = Camera.CameraType
-            Camera.CameraType = Enum.CameraType.Scriptable
-            pcall(mousemoveabs, screenPos.X + 15, screenPos.Y)
-            RunService.Heartbeat:Wait()  -- let position register
-            Camera.CameraType = realType -- restore immediately, CFrame untouched
-        end
-
-        fireCallback()
+        return
     end
+
+    local spoofCF    = buildSpoofCF(myHRP, killerHRP, abilityCfg)
+    local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
+
+    local origDevice = LocalPlayer:GetAttribute("Device")
+    LocalPlayer:SetAttribute("Device", "Mobile")
+
+    if NetworkRF then
+        NetworkRF.OnClientInvoke = function(reqName, ...)
+            if reqName == "GetCameraCF" then
+                NetworkRF.OnClientInvoke = originalCB
+                return spoofCF
+            end
+            if originalCB then return originalCB(reqName, ...) end
+        end
+    end
+
+    RunService.Heartbeat:Wait()
+    RunService.Heartbeat:Wait()
+
+    fireCallback()
+
+    task.delay(0.5, function()
+        if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
+            NetworkRF.OnClientInvoke = originalCB
+        end
+        LocalPlayer:SetAttribute("Device", origDevice)
+    end)
 end
 
 -- ════════════════════════════════════════
@@ -357,12 +296,14 @@ local function applyPatch(actor)
         if not enabled then return crystalCB(self, p290) end
         if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
 
+        -- Let the original callback run so YOU control the charge
+        -- We only intercept the fire event below
         self.State.IsCrystalEquipped = true
         Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
 
         local abilityCfg = self.Config.Crystal
 
-        -- Create AimIndicator beam
+        -- Beam indicator (shows arc while charging)
         local indicator     = nil
         local indicatorConn = nil
 
@@ -370,16 +311,10 @@ local function applyPatch(actor)
             indicator = self.Behavior:lcl_createCrystalIndicator(self)
         end)
 
-        -- Show ChargeUI at 100% / green (always full charge)
-        pcall(function()
-            local chargeUI = abilityCfg.ChargeUI:Clone()
-            chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
-            chargeUI.Bar.Percent.Text = "100%"
-            chargeUI.Bar.ImageColor3  = Color3.new(0, 1, 0)
-            self._patchChargeUI = chargeUI
-        end)
+        -- Show ChargeUI reflecting real charge (pass-through)
+        -- We don't override it so the player sees their actual charge
 
-        -- Drive beam each heartbeat (no camera changes here)
+        -- Drive beam each heartbeat
         if aimbotOn and indicator then
             indicatorConn = RunService.Heartbeat:Connect(function()
                 if not self.State.IsCrystalEquipped then
@@ -395,54 +330,55 @@ local function applyPatch(actor)
             end)
         end
 
-        task.spawn(function()
-            task.wait(abilityCfg.ChannelTime + 0.05)
+        -- Hook the actual throw input (p290 == 1 means player released / threw)
+        -- We wrap FireServerConnection so next throw call gets silent-aimed
+        local originalFire = Network.FireServerConnection
+        local hookApplied  = false
 
-            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-            pcall(function()
-                if self.Instances and self.Instances.CrystalIndicator then
-                    for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
-                    self.Instances.CrystalIndicator = nil
-                end
-            end)
-            pcall(function()
-                if self._patchChargeUI and self._patchChargeUI.Parent then
-                    self._patchChargeUI:Destroy()
-                    self._patchChargeUI = nil
-                end
-            end)
+        if aimbotOn then
+            hookApplied = true
+            Network.FireServerConnection = function(net, connName, evType, val, ...)
+                if connName == ("%sCrystalInput"):format(self.Player.Name) and val == 1 then
+                    -- Restore immediately
+                    Network.FireServerConnection = originalFire
 
-            if not (self.State.IsCrystalEquipped and enabled) then return end
+                    if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                    pcall(function()
+                        if self.Instances and self.Instances.CrystalIndicator then
+                            for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
+                            self.Instances.CrystalIndicator = nil
+                        end
+                    end)
 
-            local function doFire()
-                Network:FireServerConnection(
-                    ("%sCrystalInput"):format(self.Player.Name),
-                    "REMOTE_EVENT",
-                    1
-                )
-            end
-
-            if aimbotOn then
-                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                if myHRP then
-                    local killer    = getNearestKiller(myHRP.Position)
-                    local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
-                    if killerHRP then
-                        doAimAndFire(myHRP, killerHRP, doFire, abilityCfg)
-                    else
-                        doFire()
+                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                    if myHRP then
+                        local killer    = getNearestKiller(myHRP.Position)
+                        local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
+                        if killerHRP then
+                            doSilentAim(myHRP, killerHRP, function()
+                                originalFire(net, connName, evType, val, ...)
+                            end, abilityCfg)
+                            return
+                        end
                     end
-                else
-                    doFire()
+                    return originalFire(net, connName, evType, val, ...)
                 end
-            else
-                doFire()
+                return originalFire(net, connName, evType, val, ...)
             end
+        end
+
+        -- Safety: restore hook if crystal cancelled
+        task.spawn(function()
+            repeat task.wait(0.1) until not self.State.IsCrystalEquipped or not enabled or unloaded
+            if hookApplied and Network.FireServerConnection ~= originalFire then
+                Network.FireServerConnection = originalFire
+            end
+            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
         end)
     end
 
     patched = true
-    print("[V1perThrow] Patched.")
+    print("[LoveThrow] Patched.")
 end
 
 local function removePatch(actor)
@@ -454,53 +390,48 @@ local function removePatch(actor)
         crystalCB = nil
     end
     patched = false
-    print("[V1perThrow] Patch removed.")
+    print("[LoveThrow] Patch removed.")
 end
 
 -- ════════════════════════════════════════
---   WINDUI
+--   RAYFIELD GUI
 -- ════════════════════════════════════════
 
-local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+local Rayfield = loadstring(game:HttpGet(
+    "https://sirius.menu/rayfield"
 ))()
 
-local Window = WindUI:CreateWindow({
-    Title  = "V1perThrow",
-    Icon   = "gem",
-    Author = "V1perThrow",
-    Folder = "V1perThrow",
-    Theme  = "Dark",
+local Window = Rayfield:CreateWindow({
+    Name              = "LoveThrow",
+    LoadingTitle      = "LoveThrow",
+    LoadingSubtitle   = "by V1per",
+    ConfigurationSaving = { Enabled = true, FolderName = "LoveThrow", FileName = "config" },
+    Discord           = { Enabled = false },
+    KeySystem         = false,
 })
 
-if not isMobile then
-    Window:SetToggleKey(Enum.KeyCode.K)
-end
+local Tab = Window:CreateTab("Main", "crosshair")
 
-local Tab = Window:Tab({ Title = "Main", Icon = "crosshair" })
+Tab:CreateSection("Status")
 
-local StatusParagraph = Tab:Paragraph({
-    Title   = "Status",
-    Content = "Waiting for actor...",
-})
+local StatusLabel = Tab:CreateLabel("Waiting for actor...")
 
 local function setStatus(text)
-    StatusParagraph:SetDesc(text)
+    StatusLabel:Set(text)
 end
 
-Tab:Paragraph({
-    Title   = "Platform",
-    Content = isMobile
-        and "Mobile — OnClientInvoke spoof, zero camera changes"
-        or  "PC — cursor snapped to arc landing, zero camera changes",
-})
+Tab:CreateSection("Platform")
+Tab:CreateLabel(isMobile
+    and "Mobile — silent aim via OnClientInvoke spoof"
+    or  "PC — your aim, silent aim on mobile only")
 
-Tab:Toggle({
-    Title = "Enable Patch",
-    Desc  = "Auto-fire Crystal when equipped",
-    Icon  = "zap",
-    Value = enabled,
-    Callback = function(state)
+Tab:CreateSection("Controls")
+
+Tab:CreateToggle({
+    Name          = "Enable Patch",
+    CurrentValue  = enabled,
+    Flag          = "enabled",
+    Callback      = function(state)
         if unloaded then return end
         enabled = state
         Config.set("enabled", state)
@@ -510,12 +441,11 @@ Tab:Toggle({
     end,
 })
 
-Tab:Toggle({
-    Title = "Aimbot",
-    Desc  = "Auto-aim at nearest killer when firing",
-    Icon  = "target",
-    Value = aimbotOn,
-    Callback = function(state)
+Tab:CreateToggle({
+    Name          = "Silent Aim (Mobile)",
+    CurrentValue  = aimbotOn,
+    Flag          = "aimbotOn",
+    Callback      = function(state)
         if unloaded then return end
         aimbotOn = state
         Config.set("aimbotOn", state)
@@ -525,49 +455,31 @@ Tab:Toggle({
     end,
 })
 
-Tab:Divider()
-
-Tab:Slider({
-    Title = "Aim Offset",
-    Desc  = "Y adjustment on aim target (0 = killer centre)",
-    Step  = 0.1,
-    Value = { Min = AIM_OFFSET_MIN, Max = AIM_OFFSET_MAX, Default = AIM_OFFSET },
-    Callback = function(v) AIM_OFFSET = v; Config.set("aimOffset", v) end,
+Tab:CreateSlider({
+    Name         = "Prediction",
+    Range        = { PREDICTION_MIN, PREDICTION_MAX },
+    Increment    = 0.01,
+    CurrentValue = PREDICTION,
+    Flag         = "prediction",
+    Callback     = function(v)
+        PREDICTION = v
+        Config.set("prediction", v)
+    end,
 })
 
-Tab:Slider({
-    Title = "Prediction",
-    Desc  = "Seconds to lead the killer's movement",
-    Step  = 0.01,
-    Value = { Min = PREDICTION_MIN, Max = PREDICTION_MAX, Default = PREDICTION },
-    Callback = function(v) PREDICTION = v; Config.set("prediction", v) end,
-})
+Tab:CreateSection("Settings")
 
-Tab:Slider({
-    Title = "Hold Duration",
-    Desc  = "Seconds to hold aim after firing",
-    Step  = 0.1,
-    Value = { Min = HOLD_DURATION_MIN, Max = HOLD_DURATION_MAX, Default = HOLD_DURATION },
-    Callback = function(v) HOLD_DURATION = v; Config.set("holdDuration", v) end,
-})
-
-Tab:Divider()
-
-local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
-
-SettingsTab:Button({
-    Title = "Unload Script",
-    Desc  = "Remove patch and close window",
-    Icon  = "power",
+Tab:CreateButton({
+    Name     = "Unload Script",
     Callback = function()
         if unloaded then return end
         unloaded = true
         enabled  = false
         aimbotOn = false
         pcall(function() removePatch(getLocalActor()) end)
-        WindUI:Notify({ Title = "V1perThrow", Content = "Unloaded.", Icon = "check", Duration = 3 })
-        task.delay(0.5, function() Window:Destroy() end)
-        print("[V1perThrow] Unloaded.")
+        Rayfield:Notify({ Title = "LoveThrow", Content = "Unloaded.", Duration = 3 })
+        task.delay(0.5, function() Rayfield:Destroy() end)
+        print("[LoveThrow] Unloaded.")
     end,
 })
 
@@ -587,14 +499,14 @@ task.spawn(function()
                 patched          = false
                 crystalCB        = nil
                 killerMotionData = {}
-                print("[V1perThrow] New round — resetting patch.")
-                WindUI:Notify({ Title = "V1perThrow", Content = "New round — patch re-applied.", Icon = "refresh-cw", Duration = 3 })
+                print("[LoveThrow] New round — resetting patch.")
+                Rayfield:Notify({ Title = "LoveThrow", Content = "New round — patch re-applied.", Duration = 3 })
             end
             lastActor = currentActor
             if currentActor then
                 if enabled then applyPatch(currentActor); setStatus("Active")
                 else setStatus("Ready — toggle to activate") end
-                print("[V1perThrow] Actor found. Ready.")
+                print("[LoveThrow] Actor found. Ready.")
             else
                 setStatus("Waiting for actor...")
             end

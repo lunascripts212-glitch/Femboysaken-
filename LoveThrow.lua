@@ -1,0 +1,694 @@
+-- LoveThrow by LoveSaken Team
+-- Run this as a LocalScript via your executor
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
+
+local Actors  = require(ReplicatedStorage.Modules.Actors)
+local Network = require(ReplicatedStorage.Modules.Network)
+local Util    = require(ReplicatedStorage.Modules.Util)
+
+-- ════════════════════════════════════════
+--   PLATFORM DETECTION
+-- ════════════════════════════════════════
+
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- ════════════════════════════════════════
+--   RUNTIME STATE
+-- ════════════════════════════════════════
+
+local enabled     = false
+local aimbotOn    = false
+local axeAimbotOn = false
+local patched     = false
+local crystalCB   = nil
+local unloaded    = false
+
+local HEAD_OFFSET = 1.5
+
+local PREDICTION     = 0.6
+local PREDICTION_MIN = 0.0
+local PREDICTION_MAX = 1.0
+
+local HOLD_DURATION = 2.0
+
+local AXE_RESTORE_DELAY     = 0.15
+local AXE_RESTORE_DELAY_MIN = 0.05
+local AXE_RESTORE_DELAY_MAX = 1.0
+
+local killerMotionData = {}
+local originalRotation = nil
+local isAxeLocked      = false
+
+-- ════════════════════════════════════════
+--   CONFIG SYSTEM
+-- ════════════════════════════════════════
+
+local fs = {
+    hasFolder  = isfolder   or function() return false end,
+    makeFolder = makefolder or function() end,
+    write      = writefile  or function() end,
+    hasFile    = isfile     or function() return false end,
+    read       = readfile   or function() return "" end,
+}
+local Config = {}
+do
+    local DIR  = "LoveThrow"
+    local FILE = DIR .. "/config.json"
+    local hs   = game:GetService("HttpService")
+    local function prep()
+        if not fs.hasFolder(DIR) then fs.makeFolder(DIR) end
+    end
+    function Config.load()
+        prep()
+        if not fs.hasFile(FILE) then return end
+        local raw = fs.read(FILE)
+        if not raw or raw == "" then return end
+        local ok, t = pcall(hs.JSONDecode, hs, raw)
+        if ok and type(t) == "table" then
+            for k, v in pairs(t) do Config._data[k] = v end
+        end
+    end
+    function Config.save()
+        prep()
+        local ok, s = pcall(hs.JSONEncode, hs, Config._data)
+        if ok and s and s ~= "" then pcall(fs.write, FILE, s) end
+    end
+    function Config.get(k, default)
+        local v = Config._data[k]
+        if v == nil then return default end
+        return v
+    end
+    function Config.set(k, v) Config._data[k] = v; Config.save() end
+    Config._data = {}
+    Config.load()
+end
+
+enabled           = Config.get("enabled",         false)
+aimbotOn          = Config.get("aimbotOn",         false)
+axeAimbotOn       = Config.get("axeAimbotOn",      false)
+PREDICTION        = Config.get("prediction",       PREDICTION)
+AXE_RESTORE_DELAY = Config.get("axeRestoreDelay",  AXE_RESTORE_DELAY)
+
+-- ════════════════════════════════════════
+--   KILLER TRACKING
+-- ════════════════════════════════════════
+
+local function getKillerVelocity(hrp)
+    local now  = tick()
+    local pos  = hrp.Position
+    local data = killerMotionData[hrp]
+    if not data then
+        killerMotionData[hrp] = { lastPos = pos, lastTime = now, velocity = Vector3.zero }
+        return Vector3.zero
+    end
+    local dt = now - data.lastTime
+    if dt <= 0 then return data.velocity end
+    local vel     = (pos - data.lastPos) / dt
+    data.lastPos  = pos
+    data.lastTime = now
+    data.velocity = vel
+    return vel
+end
+
+local function getKillerHeadPosition(killer)
+    local head = killer:FindFirstChild("Head")
+    if head then return head.Position end
+    local hrp = killer:FindFirstChild("HumanoidRootPart")
+    if hrp then return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0) end
+    return nil
+end
+
+local function getNearestKiller(fromPos)
+    local folder = workspace:FindFirstChild("Players")
+    folder = folder and folder:FindFirstChild("Killers")
+    if not folder then return nil end
+    local nearest, best = nil, math.huge
+    for _, model in ipairs(folder:GetChildren()) do
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            local d = (hrp.Position - fromPos).Magnitude
+            if d < best then best = d; nearest = model end
+        end
+    end
+    return nearest
+end
+
+-- ════════════════════════════════════════
+--   AXE AIMBOT
+-- ════════════════════════════════════════
+
+local function lockToKiller(myHRP, killerHRP)
+    if not myHRP or not killerHRP then return end
+    originalRotation = myHRP.CFrame
+    isAxeLocked = true
+    local direction = (killerHRP.Position - myHRP.Position).Unit
+    myHRP.CFrame = CFrame.new(myHRP.Position, myHRP.Position + direction)
+end
+
+local function restoreRotation(myHRP)
+    if not myHRP or not originalRotation then return end
+    task.wait(AXE_RESTORE_DELAY)
+    if isAxeLocked and originalRotation then
+        myHRP.CFrame = CFrame.new(myHRP.Position) * (originalRotation - originalRotation.Position)
+        isAxeLocked      = false
+        originalRotation = nil
+    end
+end
+
+local axeHooked = false
+local function hookAxeAbility()
+    if axeHooked then return end
+    axeHooked = true
+
+    local actor = (function()
+        for _, a in Actors.CurrentActors do
+            if a.Player == LocalPlayer then return a end
+        end
+    end)()
+
+    if not actor or not actor.Behavior or not actor.Behavior.Abilities then return end
+    local axeAbility = actor.Behavior.Abilities.Axe
+    if not axeAbility or not axeAbility.Callback then return end
+
+    local originalAxeCB = axeAbility.Callback
+    axeAbility.Callback = function(self, p290, ...)
+        if axeAimbotOn and p290 and p290 ~= "Cancelled" then
+            local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+            if myHRP then
+                local killer    = getNearestKiller(myHRP.Position)
+                local killerHRP = killer and killer:FindFirstChild("HumanoidRootPart")
+                if killerHRP then
+                    lockToKiller(myHRP, killerHRP)
+                    task.spawn(function() restoreRotation(myHRP) end)
+                end
+            end
+        end
+        return originalAxeCB(self, p290, ...)
+    end
+
+    print("[LoveThrow] Axe aimbot hooked.")
+end
+
+-- ════════════════════════════════════════
+--   BALLISTIC ARC MATH
+-- ════════════════════════════════════════
+
+local function computeArcCurve(gravity, initVel, origin, impactTime)
+    local t2   = impactTime * impactTime
+    local vt   = initVel * impactTime
+    local endP = 0.5 * gravity * t2 + vt + origin
+    local cp1  = endP - (gravity * t2 + vt) / 3
+    local cp2  = (0.125 * gravity * t2 + 0.5 * vt + origin
+                  - 0.125 * (origin + endP)) / 0.375 - cp1
+    local cs0  = (cp2 - origin).Magnitude
+    local cs1  = (cp1 - endP).Magnitude
+    local back  = (origin - endP).Unit
+    local fwd   = (cp2 - origin).Unit
+    local up    = fwd:Cross(back).Unit
+    local right = up:Cross(fwd).Unit
+    local fwdE  = (cp1 - endP).Unit
+    local upE   = fwdE:Cross(back).Unit
+    local startCF = CFrame.new(origin.X,origin.Y,origin.Z,
+        fwd.X,up.X,right.X, fwd.Y,up.Y,right.Y, fwd.Z,up.Z,right.Z)
+    local endCF = CFrame.new(endP.X,endP.Y,endP.Z,
+        fwdE.X,upE.X,right.X, fwdE.Y,upE.Y,right.Y, fwdE.Z,upE.Z,right.Z)
+    return cs0, -cs1, startCF, endCF
+end
+
+local arcParams = RaycastParams.new()
+arcParams.RespectCanCollide = true
+arcParams.CollisionGroup    = "Killers"
+arcParams.FilterType        = Enum.RaycastFilterType.Exclude
+arcParams.FilterDescendantsInstances = workspace.Players:GetDescendants()
+
+local function traceArc(gravity, initVel, origin)
+    local prev    = origin
+    local hitTime = 5
+    for t = 0.05, 5, 0.05 do
+        local pos  = gravity * 0.5 * t * t + initVel * t + origin
+        local step = pos - prev
+        local hit  = workspace:Raycast(prev, step, arcParams)
+        if hit then
+            hitTime = t - 0.05 + (hit.Position - prev).Magnitude / step.Magnitude * 0.05
+            break
+        end
+        prev = pos
+    end
+    return computeArcCurve(gravity, initVel, origin, hitTime)
+end
+
+local function getThrowPhysics(myHRP, killer, abilityCfg)
+    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+    if not killerHRP then return nil end
+    local vel = getKillerVelocity(killerHRP)
+    local killerHeadPos = getKillerHeadPosition(killer)
+    if not killerHeadPos then return nil end
+    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH     = hum and hum.HipHeight or 1.35
+    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    local predicted = killerHeadPos + vel * PREDICTION
+    local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
+    local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
+    local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
+    return spawnPos, initVel, gravity, predicted
+end
+
+local function buildSpoofCF(myHRP, killer, abilityCfg)
+    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+    if not killerHRP then return Camera.CFrame end
+    local vel = getKillerVelocity(killerHRP)
+    local v0  = abilityCfg.MaxSpeed
+    local g   = abilityCfg.ProjectileArc
+    local killerHeadPos = getKillerHeadPosition(killer)
+    if not killerHeadPos then return Camera.CFrame end
+    local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+    local hipH     = hum and hum.HipHeight or 1.35
+    local v238     = (hipH + myHRP.Size.Y / 2) / 2
+    local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+    local target   = killerHeadPos + vel * PREDICTION
+    local delta    = target - spawnPos
+    local flatV    = Vector3.new(delta.X, 0, delta.Z)
+    local dx       = flatV.Magnitude
+    local dy       = delta.Y
+    if dx < 0.01 then
+        local d = dy >= 0 and Vector3.new(0,1,0) or Vector3.new(0,-1,0)
+        return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + d)
+    end
+    local flatDir = flatV.Unit
+    local v2   = v0 * v0
+    local disc = v2*v2 - g*(g*dx*dx + 2*dy*v2)
+    local theta = disc < 0 and math.atan2(dy,dx) or math.atan2(v2-math.sqrt(disc),g*dx)
+    local T     = math.tan(theta)
+    local denom = 3 + T
+    local alpha = math.abs(denom) < 0.0001 and -math.pi/2 or math.atan2(3*T-1,denom)
+    local yawCF = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + flatDir)
+    return yawCF * CFrame.Angles(alpha, 0, 0)
+end
+
+-- ════════════════════════════════════════
+--   BEAM UPDATER
+-- ════════════════════════════════════════
+
+local function updateBeam(indicator, myHRP, killer, abilityCfg)
+    if not indicator then return end
+    local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
+    if not spawnPos then return end
+    local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
+    pcall(function()
+        indicator.Beam.CurveSize0        = cs0
+        indicator.Beam.CurveSize1        = cs1
+        indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
+        indicator.AttachmentEnd.CFrame   = workspace.Terrain.CFrame:Inverse() * endCF
+        indicator.Target:PivotTo(endCF)
+    end)
+end
+
+-- ════════════════════════════════════════
+--   AIM + FIRE
+-- ════════════════════════════════════════
+
+local NetworkRF = ReplicatedStorage.Modules.Network:FindFirstChild("RemoteFunction")
+
+local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
+    if isMobile then
+        local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
+        local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
+        local origDevice = LocalPlayer:GetAttribute("Device")
+        local holdActive = true
+
+        LocalPlayer:SetAttribute("Device", "Mobile")
+
+        if NetworkRF then
+            NetworkRF.OnClientInvoke = function(reqName, ...)
+                if reqName == "GetCameraCF" and holdActive then
+                    return spoofCF
+                end
+                if originalCB then return originalCB(reqName, ...) end
+            end
+        end
+
+        RunService.Heartbeat:Wait()
+        RunService.Heartbeat:Wait()
+        fireCallback()
+
+        task.delay(HOLD_DURATION, function()
+            holdActive = false
+            if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
+                NetworkRF.OnClientInvoke = originalCB
+            end
+            LocalPlayer:SetAttribute("Device", origDevice)
+        end)
+    else
+        local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
+        if not spawnPos then fireCallback(); return end
+
+        local landPos = spawnPos
+        local prev    = spawnPos
+        for t = 0.05, 5, 0.05 do
+            local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
+            local step = pos - prev
+            local hit  = workspace:Raycast(prev, step, arcParams)
+            if hit then landPos = hit.Position; break end
+            landPos = pos
+            prev    = pos
+        end
+
+        local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
+        if onScreen then
+            local realType = Camera.CameraType
+            Camera.CameraType = Enum.CameraType.Scriptable
+            pcall(mousemoveabs, screenPos.X + 15, screenPos.Y)
+            RunService.Heartbeat:Wait()
+            Camera.CameraType = realType
+        end
+        fireCallback()
+    end
+end
+
+-- ════════════════════════════════════════
+--   PATCH LOGIC
+-- ════════════════════════════════════════
+
+local function getLocalActor()
+    for _, actor in Actors.CurrentActors do
+        if actor.Player == LocalPlayer then return actor end
+    end
+    return nil
+end
+
+local function applyPatch(actor)
+    if patched or not actor or not actor.Behavior then return end
+    if not actor.Behavior.Abilities or not actor.Behavior.Abilities.Crystal then return end
+
+    crystalCB = actor.Behavior.Abilities.Crystal.Callback
+
+    actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
+        if RunService:IsServer() then return crystalCB(self, p290) end
+        if not enabled then return crystalCB(self, p290) end
+        if p290 == "Cancelled" or not p290 then return crystalCB(self, p290) end
+
+        self.State.IsCrystalEquipped = true
+        Util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
+
+        local abilityCfg = self.Config.Crystal
+
+        -- ── Animated charge bar (0% red → 100% green over HOLD_DURATION) ──
+        local chargeUI = nil
+        local fillConn = nil
+        pcall(function()
+            chargeUI = abilityCfg.ChargeUI:Clone()
+            chargeUI.Parent = LocalPlayer.PlayerGui.TemporaryUI
+            chargeUI.Bar.Percent.Text = "0%"
+            chargeUI.Bar.ImageColor3  = Color3.new(1, 0, 0)
+
+            local startTime = tick()
+            fillConn = RunService.Heartbeat:Connect(function()
+                local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
+                pcall(function()
+                    chargeUI.Bar.Percent.Text = math.floor(progress * 100) .. "%"
+                    chargeUI.Bar.ImageColor3  = Color3.new(1 - progress, progress, 0)
+                end)
+                if progress >= 1 then
+                    fillConn:Disconnect()
+                    fillConn = nil
+                end
+            end)
+        end)
+
+        -- ── Beam indicator ──
+        local indicator     = nil
+        local indicatorConn = nil
+
+        pcall(function()
+            indicator = self.Behavior:lcl_createCrystalIndicator(self)
+        end)
+
+        if aimbotOn and indicator then
+            indicatorConn = RunService.Heartbeat:Connect(function()
+                if not self.State.IsCrystalEquipped then
+                    if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                    return
+                end
+                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                if not myHRP then return end
+                local killer = getNearestKiller(myHRP.Position)
+                if not killer then return end
+                updateBeam(indicator, myHRP, killer, abilityCfg)
+            end)
+        end
+
+        -- ── Hold then fire ──
+        task.spawn(function()
+            task.wait(HOLD_DURATION)
+
+            if fillConn then fillConn:Disconnect(); fillConn = nil end
+            pcall(function()
+                if chargeUI and chargeUI.Parent then
+                    chargeUI:Destroy(); chargeUI = nil
+                end
+            end)
+
+            if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+            pcall(function()
+                if self.Instances and self.Instances.CrystalIndicator then
+                    for _, p in self.Instances.CrystalIndicator do pcall(p.Destroy, p) end
+                    self.Instances.CrystalIndicator = nil
+                end
+            end)
+
+            if not (self.State.IsCrystalEquipped and enabled) then return end
+
+            local function doFire()
+                Network:FireServerConnection(
+                    ("%sCrystalInput"):format(self.Player.Name),
+                    "REMOTE_EVENT",
+                    1
+                )
+            end
+
+            if aimbotOn then
+                local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
+                if myHRP then
+                    local killer = getNearestKiller(myHRP.Position)
+                    if killer then
+                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
+                    else
+                        doFire()
+                    end
+                else
+                    doFire()
+                end
+            else
+                doFire()
+            end
+        end)
+    end
+
+    patched = true
+
+    -- Hook axe aimbot on same actor if enabled
+    if axeAimbotOn then
+        hookAxeAbility()
+    end
+
+    print("[LoveThrow] Patched.")
+end
+
+local function removePatch(actor)
+    if not patched or not actor then return end
+    if not actor.Behavior or not actor.Behavior.Abilities then return end
+    if not actor.Behavior.Abilities.Crystal then return end
+    if crystalCB then
+        actor.Behavior.Abilities.Crystal.Callback = crystalCB
+        crystalCB = nil
+    end
+    patched   = false
+    axeHooked = false
+    print("[LoveThrow] Patch removed.")
+end
+
+-- ════════════════════════════════════════
+--   RAYFIELD UI
+-- ════════════════════════════════════════
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+    Name            = "LoveThrow",
+    Icon            = 0,
+    LoadingTitle    = "LoveThrow",
+    LoadingSubtitle = "by LoveSaken Team",
+    Theme           = "Dark",
+    ConfigurationSaving = { Enabled = false },
+})
+
+local MainTab = Window:CreateTab("Main", 0)
+
+MainTab:CreateSection("Status")
+local StatusParagraph = MainTab:CreateParagraph({
+    Title   = "Status",
+    Content = "Waiting for actor...",
+})
+local function setStatus(text)
+    pcall(function() StatusParagraph:Set(text) end)
+end
+
+MainTab:CreateSection("Platform")
+MainTab:CreateParagraph({
+    Title   = "Platform",
+    Content = isMobile
+        and "Mobile — OnClientInvoke spoof"
+        or  "PC — cursor snapped to arc landing",
+})
+
+MainTab:CreateSection("Crystal")
+MainTab:CreateToggle({
+    Name         = "Enable Patch",
+    CurrentValue = enabled,
+    Flag         = "EnablePatch",
+    Callback     = function(state)
+        if unloaded then return end
+        enabled = state
+        Config.set("enabled", state)
+        local actor = getLocalActor()
+        if enabled and not patched and actor then
+            pcall(function() applyPatch(actor) end)
+        end
+        setStatus(enabled and "Active" or "Inactive")
+    end,
+})
+
+MainTab:CreateToggle({
+    Name         = "Crystal Aimbot",
+    CurrentValue = aimbotOn,
+    Flag         = "Aimbot",
+    Callback     = function(state)
+        if unloaded then return end
+        aimbotOn = state
+        Config.set("aimbotOn", state)
+        if not aimbotOn then killerMotionData = {} end
+        local actor = getLocalActor()
+        if aimbotOn and not patched and actor then
+            pcall(function() applyPatch(actor) end)
+        end
+    end,
+})
+
+MainTab:CreateSection("Axe")
+MainTab:CreateToggle({
+    Name         = "Axe Aimbot",
+    CurrentValue = axeAimbotOn,
+    Flag         = "AxeAimbot",
+    Callback     = function(state)
+        if unloaded then return end
+        axeAimbotOn = state
+        Config.set("axeAimbotOn", state)
+        if axeAimbotOn then
+            hookAxeAbility()
+        end
+    end,
+})
+
+MainTab:CreateSlider({
+    Name         = "Axe Restore Delay",
+    Range        = {AXE_RESTORE_DELAY_MIN, AXE_RESTORE_DELAY_MAX},
+    Increment    = 0.01,
+    Suffix       = "s",
+    CurrentValue = AXE_RESTORE_DELAY,
+    Flag         = "AxeRestoreDelay",
+    Callback     = function(v)
+        AXE_RESTORE_DELAY = v
+        Config.set("axeRestoreDelay", v)
+    end,
+})
+
+MainTab:CreateSection("Settings")
+MainTab:CreateSlider({
+    Name         = "Prediction",
+    Range        = {PREDICTION_MIN, PREDICTION_MAX},
+    Increment    = 0.01,
+    Suffix       = "s",
+    CurrentValue = PREDICTION,
+    Flag         = "Prediction",
+    Callback     = function(v)
+        PREDICTION = v
+        Config.set("prediction", v)
+    end,
+})
+
+local SettingsTab = Window:CreateTab("Settings", 0)
+SettingsTab:CreateSection("Unload")
+SettingsTab:CreateButton({
+    Name     = "Unload Script",
+    Callback = function()
+        if unloaded then return end
+        unloaded    = true
+        enabled     = false
+        aimbotOn    = false
+        axeAimbotOn = false
+        pcall(function() removePatch(getLocalActor()) end)
+        pcall(function()
+            Rayfield:Notify({
+                Title    = "LoveThrow",
+                Content  = "Unloaded successfully",
+                Duration = 3,
+            })
+        end)
+        task.delay(0.5, function() pcall(function() Window:Destroy() end) end)
+        print("[LoveThrow] Unloaded.")
+    end,
+})
+
+-- ════════════════════════════════════════
+--   ACTOR WATCHER
+-- ════════════════════════════════════════
+
+task.spawn(function()
+    setStatus("Waiting for actor...")
+    local lastActor = nil
+    while not unloaded do
+        task.wait(0.5)
+        if unloaded then break end
+        local currentActor = getLocalActor()
+        if currentActor ~= lastActor then
+            if lastActor ~= nil then
+                patched          = false
+                crystalCB        = nil
+                axeHooked        = false
+                killerMotionData = {}
+                print("[LoveThrow] New round — resetting patch.")
+                pcall(function()
+                    Rayfield:Notify({
+                        Title    = "LoveThrow",
+                        Content  = "New round — patch re-applied",
+                        Duration = 3,
+                    })
+                end)
+            end
+            lastActor = currentActor
+            if currentActor then
+                if enabled then
+                    pcall(function() applyPatch(currentActor) end)
+                    setStatus("Active")
+                else
+                    setStatus("Ready — toggle to activate")
+                end
+                if axeAimbotOn then
+                    hookAxeAbility()
+                end
+                print("[LoveThrow] Actor found. Ready.")
+            else
+                setStatus("Waiting for actor...")
+            end
+        end
+    end
+end)

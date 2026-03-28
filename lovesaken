@@ -266,6 +266,7 @@ local S = {
     crystalPitchEnabled = tobool(get("crystalPitchEnabled", false), false),
     crystalPitchAimbot  = tobool(get("crystalPitchAimbot", true), true),
     crystalPrediction   = tonumber(get("crystalPrediction", 0.6)) or 0.6,
+    crystalHoldDuration = 2.0, -- Fixed at 2 seconds
     isMobile            = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled,
     elliotAimbotEnabled = tobool(get("elliotAimbotEnabled", false), false),
     elliotPrediction    = tonumber(get("elliotPrediction", 5)) or 5,
@@ -314,25 +315,29 @@ local TRIGGER_SOUNDS = {
     ["131406927389838"]=true,["117173212095661"]=true,["71834552297085"]=true,
     ["805165833096"]=true,["80516583309685"]=true,["76959687420003"]=true,
     ["107444859834748"]=true,["86833981571073"]=true,["110372418055226"]=true,
-    ["86494585504534"]=true,["121369993837377"]=true,  -- REMOVED: 132331977491979
+    ["86494585504534"]=true,["121369993837377"]=true,
     ["18782451032"]=true,["80587845277702"]=true,["94317217837143"]=true,
     ["136728245733659"]=true,["104910828105172"]=true,["98111231282218"]=true,
     ["71310583817000"]=true,["124903763333174"]=true,["72425554233832"]=true,
     ["131123355704017"]=true,["128856426573270"]=true,["128195973631079"]=true,
     ["128367348686124"]=true,["105204810054381"]=true,["98675142200448"]=true,
 }
+
 local function getKillersFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Killers")
 end
+
 local function getSurvivorsFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Survivors")
 end
+
 local function getIngameFolder()
     local m = Workspace:FindFirstChild("Map")
     return m and m:FindFirstChild("Ingame")
 end
+
 local function getCurrentMapFolder()
     local ig = getIngameFolder()
     return ig and ig:FindFirstChild("Map")
@@ -726,19 +731,20 @@ do
     end
 end
 
--- ==================== CRYSTAL PITCH MODULE ====================
--- Source: LoveThrow by LoveSaken Team (integrated)
+-- ==================== CRYSTAL PITCH MODULE (SILENT AIM - HEAD + 2s HOLD) ====================
 local CrystalPitch = {}
 do
-    local patched       = false
-    local crystalCB     = nil
+    local patched = false
+    local crystalCB = nil
     local killerMotionData = {}
-    local HEAD_OFFSET   = 1.5
-    local NetworkRF     = nil
-
+    local originalCamType = nil
+    local aimConnection = nil
+    local HOLD_DURATION = 2.0
+    local HEAD_OFFSET = 1.5
+    
     local function getKillerVelocity(hrp)
-        local now  = tick()
-        local pos  = hrp.Position
+        local now = tick()
+        local pos = hrp.Position
         local data = killerMotionData[hrp]
         if not data then
             killerMotionData[hrp] = { lastPos = pos, lastTime = now, velocity = Vector3.zero }
@@ -746,13 +752,13 @@ do
         end
         local dt = now - data.lastTime
         if dt <= 0 then return data.velocity end
-        local vel      = (pos - data.lastPos) / dt
-        data.lastPos   = pos
-        data.lastTime  = now
-        data.velocity  = vel
+        local vel = (pos - data.lastPos) / dt
+        data.lastPos = pos
+        data.lastTime = now
+        data.velocity = vel
         return vel
     end
-
+    
     local function getKillerHeadPosition(killer)
         local head = killer:FindFirstChild("Head")
         if head then return head.Position end
@@ -760,8 +766,8 @@ do
         if hrp then return hrp.Position + Vector3.new(0, HEAD_OFFSET, 0) end
         return nil
     end
-
-    local function getNearestKillerForCrystal(fromPos)
+    
+    local function getNearestKiller(fromPos)
         local folder = Workspace:FindFirstChild("Players")
         folder = folder and folder:FindFirstChild("Killers")
         if not folder then return nil end
@@ -776,187 +782,151 @@ do
         end
         return nearest
     end
-
-    local function computeArcCurve(gravity, initVel, origin, impactTime)
-        local t2   = impactTime * impactTime
-        local vt   = initVel * impactTime
-        local endP = 0.5 * gravity * t2 + vt + origin
-        local cp1  = endP - (gravity * t2 + vt) / 3
-        local cp2  = (0.125 * gravity * t2 + 0.5 * vt + origin
-                      - 0.125 * (origin + endP)) / 0.375 - cp1
-        local cs0  = (cp2 - origin).Magnitude
-        local cs1  = (cp1 - endP).Magnitude
-        local back  = (origin - endP).Unit
-        local fwd   = (cp2 - origin).Unit
-        local up    = fwd:Cross(back).Unit
-        local right = up:Cross(fwd).Unit
-        local fwdE  = (cp1 - endP).Unit
-        local upE   = fwdE:Cross(back).Unit
-        local startCF = CFrame.new(origin.X, origin.Y, origin.Z,
-            fwd.X, up.X, right.X, fwd.Y, up.Y, right.Y, fwd.Z, up.Z, right.Z)
-        local endCF = CFrame.new(endP.X, endP.Y, endP.Z,
-            fwdE.X, upE.X, right.X, fwdE.Y, upE.Y, right.Y, fwdE.Z, upE.Z, right.Z)
-        return cs0, -cs1, startCF, endCF
-    end
-
-    local arcParams = RaycastParams.new()
-    arcParams.RespectCanCollide = true
-    arcParams.CollisionGroup    = "Killers"
-    arcParams.FilterType        = Enum.RaycastFilterType.Exclude
-    pcall(function() arcParams.FilterDescendantsInstances = {Workspace:FindFirstChild("Players")} end)
-
-    local function traceArc(gravity, initVel, origin)
-        local prev    = origin
-        local hitTime = 5
-        for t = 0.05, 5, 0.05 do
-            local pos  = gravity * 0.5 * t * t + initVel * t + origin
-            local step = pos - prev
-            local hit  = Workspace:Raycast(prev, step, arcParams)
-            if hit then
-                hitTime = t - 0.05 + (hit.Position - prev).Magnitude / step.Magnitude * 0.05
-                break
-            end
-            prev = pos
-        end
-        return computeArcCurve(gravity, initVel, origin, hitTime)
-    end
-
-    local function getThrowPhysics(myHRP, killer, abilityCfg)
+    
+    -- Silent aim function - manipulates camera CFrame without moving mouse
+    local function silentAimAtHead(myRoot, killer)
+        if not myRoot or not killer then return
+        
         local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-        if not killerHRP then return nil end
-        local vel           = getKillerVelocity(killerHRP)
-        local killerHeadPos = getKillerHeadPosition(killer)
-        if not killerHeadPos then return nil end
-        local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-        local hipH     = hum and hum.HipHeight or 1.35
-        local v238     = (hipH + myHRP.Size.Y / 2) / 2
-        local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-        local predicted = killerHeadPos + vel * S.crystalPrediction
-        local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
-        local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
-        local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
-        return spawnPos, initVel, gravity, predicted
-    end
-
-    local function buildSpoofCF(myHRP, killer, abilityCfg)
-        local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-        if not killerHRP then return Camera.CFrame end
+        if not killerHRP then return
+        
         local vel = getKillerVelocity(killerHRP)
-        local v0  = abilityCfg.MaxSpeed
-        local g   = abilityCfg.ProjectileArc
         local killerHeadPos = getKillerHeadPosition(killer)
-        if not killerHeadPos then return Camera.CFrame end
-        local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-        local hipH     = hum and hum.HipHeight or 1.35
-        local v238     = (hipH + myHRP.Size.Y / 2) / 2
-        local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-        local target   = killerHeadPos + vel * S.crystalPrediction
-        local delta    = target - spawnPos
-        local flatV    = Vector3.new(delta.X, 0, delta.Z)
-        local dx       = flatV.Magnitude
-        local dy       = delta.Y
+        if not killerHeadPos then return
+        
+        -- Predict future head position
+        local predictedHead = killerHeadPos + vel * S.crystalPrediction
+        
+        -- Get camera position
+        local camPos = Camera.CFrame.Position
+        
+        -- Calculate direction to predicted head
+        local direction = (predictedHead - camPos).Unit
+        
+        -- Calculate pitch and yaw for silent aim
+        local yaw = math.atan2(direction.X, direction.Z)
+        local pitch = math.asin(-direction.Y)
+        
+        -- Store original camera type if not already stored
+        if not originalCamType then
+            originalCamType = Camera.CameraType
+        end
+        
+        -- Apply silent aim
+        Camera.CameraType = Enum.CameraType.Scriptable
+        Camera.CFrame = CFrame.new(camPos) * CFrame.Angles(pitch, yaw, 0)
+    end
+    
+    -- Mobile silent aim with ballistic correction
+    local function silentAimMobile(myRoot, killer, abilityCfg)
+        if not myRoot or not killer then return
+        
+        local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+        if not killerHRP then return
+        
+        local vel = getKillerVelocity(killerHRP)
+        local killerHeadPos = getKillerHeadPosition(killer)
+        if not killerHeadPos then return
+        
+        local predicted = killerHeadPos + vel * S.crystalPrediction
+        
+        -- Spawn position (matches server formula)
+        local hum = myRoot.Parent and myRoot.Parent:FindFirstChildOfClass("Humanoid")
+        local hipH = hum and hum.HipHeight or 1.35
+        local v238 = (hipH + myRoot.Size.Y / 2) / 2
+        local spawnPos = myRoot.CFrame.Position + Vector3.new(0, v238, 0)
+        
+        -- Ballistic solve
+        local v0 = abilityCfg.MaxSpeed or 250
+        local g = abilityCfg.ProjectileArc or 40
+        local delta = predicted - spawnPos
+        local dx = Vector3.new(delta.X, 0, delta.Z).Magnitude
+        local dy = delta.Y
+        
         if dx < 0.01 then
-            local d = dy >= 0 and Vector3.new(0, 1, 0) or Vector3.new(0, -1, 0)
-            return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + d)
+            local camPos = Camera.CFrame.Position
+            local targetPos = spawnPos + Vector3.new(0, dy, 0)
+            local dir = (targetPos - camPos).Unit
+            local yaw = math.atan2(dir.X, dir.Z)
+            local pitch = math.asin(-dir.Y)
+            if not originalCamType then originalCamType = Camera.CameraType end
+            Camera.CameraType = Enum.CameraType.Scriptable
+            Camera.CFrame = CFrame.new(camPos) * CFrame.Angles(pitch, yaw, 0)
+            return
         end
-        local flatDir = flatV.Unit
-        local v2   = v0 * v0
+        
+        -- Solve for throw angle
+        local v2 = v0 * v0
         local disc = v2 * v2 - g * (g * dx * dx + 2 * dy * v2)
-        local theta = disc < 0 and math.atan2(dy, dx) or math.atan2(v2 - math.sqrt(disc), g * dx)
-        local T     = math.tan(theta)
-        local denom = 3 + T
-        local alpha = math.abs(denom) < 0.0001 and -math.pi / 2 or math.atan2(3 * T - 1, denom)
-        local yawCF = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + flatDir)
-        return yawCF * CFrame.Angles(alpha, 0, 0)
-    end
-
-    local function updateBeam(indicator, myHRP, killer, abilityCfg)
-        if not indicator then return end
-        local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
-        if not spawnPos then return end
-        local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
-        pcall(function()
-            if indicator.Beam then
-                indicator.Beam.CurveSize0        = cs0
-                indicator.Beam.CurveSize1        = cs1
-            end
-            if indicator.AttachmentStart then
-                indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
-            end
-            if indicator.AttachmentEnd then
-                indicator.AttachmentEnd.CFrame   = Workspace.Terrain.CFrame:Inverse() * endCF
-            end
-            if indicator.Target then
-                indicator.Target:PivotTo(endCF)
-            end
-        end)
-    end
-
-    local function getNetworkRF()
-        pcall(function()
-            local net = ReplicatedStorage:FindFirstChild("Modules")
-            if net then
-                net = net:FindFirstChild("Network")
-                if net then NetworkRF = net:FindFirstChild("RemoteFunction") end
-            end
-        end)
-        return NetworkRF
-    end
-
-    local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
-        if S.isMobile then
-            local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
-            local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
-            local origDevice = LocalPlayer:GetAttribute("Device")
-            local holdActive = true
-
-            LocalPlayer:SetAttribute("Device", "Mobile")
-
-            if NetworkRF then
-                NetworkRF.OnClientInvoke = function(reqName, ...)
-                    if reqName == "GetCameraCF" and holdActive then return spoofCF end
-                    if originalCB then return originalCB(reqName, ...) end
-                end
-            end
-
-            RunService.Heartbeat:Wait()
-            RunService.Heartbeat:Wait()
-            fireCallback()
-
-            task.delay(2.0, function()
-                holdActive = false
-                if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
-                    NetworkRF.OnClientInvoke = originalCB
-                end
-                LocalPlayer:SetAttribute("Device", origDevice)
-            end)
+        local theta
+        if disc < 0 then
+            theta = math.atan2(dy, dx)
         else
-            local spawnPos, initVel, gravity = getThrowPhysics(myHRP, killer, abilityCfg)
-            if not spawnPos then fireCallback(); return end
-
-            local landPos = spawnPos
-            local prev    = spawnPos
-            for t = 0.05, 5, 0.05 do
-                local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
-                local step = pos - prev
-                local hit  = Workspace:Raycast(prev, step, arcParams)
-                if hit then landPos = hit.Position; break end
-                landPos = pos
-                prev    = pos
-            end
-
-            local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
-            if onScreen then
-                local realType = Camera.CameraType
-                Camera.CameraType = Enum.CameraType.Scriptable
-                pcall(mousemoveabs, screenPos.X + 15, screenPos.Y)
-                RunService.Heartbeat:Wait()
-                Camera.CameraType = realType
-            end
-            fireCallback()
+            theta = math.atan2(v2 - math.sqrt(disc), g * dx)
         end
+        
+        -- Convert throw angle to camera pitch (compensates for UpVector/3 bias)
+        local T = math.tan(theta)
+        local denom = 3 + T
+        local alpha
+        if math.abs(denom) < 0.0001 then
+            alpha = -math.pi / 2
+        else
+            alpha = math.atan2(3 * T - 1, denom)
+        end
+        
+        -- Build camera CFrame
+        local flatDir = Vector3.new(delta.X, 0, delta.Z).Unit
+        local camPos = Camera.CFrame.Position
+        local yawCF = CFrame.new(camPos, camPos + flatDir)
+        local pitchCF = CFrame.Angles(alpha, 0, 0)
+        
+        if not originalCamType then originalCamType = Camera.CameraType end
+        Camera.CameraType = Enum.CameraType.Scriptable
+        Camera.CFrame = yawCF * pitchCF
     end
-
+    
+    -- Start silent aim during hold
+    local function startSilentAim(myRoot, killer, abilityCfg)
+        if aimConnection then aimConnection:Disconnect() end
+        
+        -- Apply silent aim immediately
+        if S.isMobile then
+            silentAimMobile(myRoot, killer, abilityCfg)
+        else
+            silentAimAtHead(myRoot, killer)
+        end
+        
+        -- Keep updating during hold
+        aimConnection = RunService.RenderStepped:Connect(function()
+            if not myRoot or not myRoot.Parent or not killer or not killer.Parent then
+                if aimConnection then aimConnection:Disconnect() end
+                aimConnection = nil
+                if originalCamType then
+                    Camera.CameraType = originalCamType
+                    originalCamType = nil
+                end
+                return
+            end
+            
+            if S.isMobile then
+                silentAimMobile(myRoot, killer, abilityCfg)
+            else
+                silentAimAtHead(myRoot, killer)
+            end
+        end)
+        
+        -- Stop after hold duration + small buffer
+        task.delay(HOLD_DURATION + 0.2, function()
+            if aimConnection then aimConnection:Disconnect() end
+            aimConnection = nil
+            if originalCamType then
+                Camera.CameraType = originalCamType
+                originalCamType = nil
+            end
+        end)
+    end
+    
     local function fireCrystalAbility(self)
         local remoteName = ("%sCrystalInput"):format(self.Player and self.Player.Name or "JaneDoe")
         pcall(function()
@@ -980,7 +950,7 @@ do
             end
         end)
     end
-
+    
     function CrystalPitch.patch()
         if patched then return end
         local networkMod = ReplicatedStorage:FindFirstChild("Modules")
@@ -989,7 +959,7 @@ do
         if not actorsMod then return end
         local ok, actors = pcall(require, actorsMod)
         if not ok or not actors then return end
-        getNetworkRF()
+        
         local actor
         if actors.CurrentActors then
             for _, a in ipairs(actors.CurrentActors) do
@@ -998,21 +968,27 @@ do
         end
         if not actor or not actor.Behavior or not actor.Behavior.Abilities then return end
         if not actor.Behavior.Abilities.Crystal then return end
+        
         crystalCB = actor.Behavior.Abilities.Crystal.Callback
         actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
             if RunService:IsServer() then
-                if crystalCB then return crystalCB(self, p290) end; return
+                if crystalCB then return crystalCB(self, p290) end
+                return
             end
             if not S.crystalPitchEnabled then
-                if crystalCB then return crystalCB(self, p290) end; return
+                if crystalCB then return crystalCB(self, p290) end
+                return
             end
             if p290 == "Cancelled" or not p290 then
                 if self.State then self.State.IsCrystalEquipped = false end
-                if crystalCB then return crystalCB(self, p290) end; return
+                if crystalCB then return crystalCB(self, p290) end
+                return
             end
+            
             local result
             if crystalCB then result = crystalCB(self, p290) end
             if self.State then self.State.IsCrystalEquipped = true end
+            
             pcall(function()
                 local util = ReplicatedStorage:FindFirstChild("Modules")
                 if util then
@@ -1020,8 +996,11 @@ do
                     if util then util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true) end
                 end
             end)
+            
             local abilityCfg = self.Config.Crystal
-            local chargeUI, fillConn, crystalIndicator, indicatorConn
+            local chargeUI, fillConn
+            
+            -- Create charge UI
             pcall(function()
                 if abilityCfg.ChargeUI then
                     chargeUI = abilityCfg.ChargeUI:Clone()
@@ -1031,7 +1010,7 @@ do
                     if bar then
                         local startTime = tick()
                         fillConn = RunService.Heartbeat:Connect(function()
-                            local progress = math.clamp((tick() - startTime) / 2.0, 0, 1)
+                            local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
                             pcall(function()
                                 bar.Size = UDim2.new(progress, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
                                 bar.ImageColor3 = Color3.fromHSV(progress * 0.35, 1, 1)
@@ -1043,28 +1022,13 @@ do
                     end
                 end
             end)
-            pcall(function()
-                if self.Behavior and self.Behavior.lcl_createCrystalIndicator then
-                    crystalIndicator = self.Behavior:lcl_createCrystalIndicator(self)
-                end
-            end)
-            if S.crystalPitchAimbot and crystalIndicator then
-                indicatorConn = RunService.Heartbeat:Connect(function()
-                    if not self.State or not self.State.IsCrystalEquipped then
-                        if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end; return
-                    end
-                    local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                    if myHRP then
-                        local killer = getNearestKillerForCrystal(myHRP.Position)
-                        if killer then updateBeam(crystalIndicator, myHRP, killer, abilityCfg) end
-                    end
-                end)
-            end
+            
             task.spawn(function()
-                task.wait(2.0)
+                task.wait(HOLD_DURATION)
+                
                 if fillConn then fillConn:Disconnect(); fillConn = nil end
                 if chargeUI then pcall(function() chargeUI:Destroy() end); chargeUI = nil end
-                if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
+                
                 pcall(function()
                     if self.Instances and self.Instances.CrystalIndicator then
                         for _, p in self.Instances.CrystalIndicator do
@@ -1073,15 +1037,20 @@ do
                         self.Instances.CrystalIndicator = nil
                     end
                 end)
+                
                 if not (self.State and self.State.IsCrystalEquipped and S.crystalPitchEnabled) then return end
+                
                 local function doFire()
                     fireCrystalAbility(self)
                 end
+                
                 if S.crystalPitchAimbot then
                     local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
-                    local killer = myHRP and getNearestKillerForCrystal(myHRP.Position)
+                    local killer = myHRP and getNearestKiller(myHRP.Position)
                     if killer then
-                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
+                        startSilentAim(myHRP, killer, abilityCfg)
+                        task.wait(0.05)
+                        doFire()
                     else
                         doFire()
                     end
@@ -1089,20 +1058,28 @@ do
                     doFire()
                 end
             end)
+            
             return result
         end
         patched = true
-        pcall(function() WindUI:Notify({Title="Crystal Pitch", Content="Patched!", Icon="sparkles", Duration=3}) end)
+        pcall(function() WindUI:Notify({Title="Crystal Pitch", Content="Patched! (Silent Aim - Head + 2s)", Icon="sparkles", Duration=3}) end)
     end
-
+    
     function CrystalPitch.unpatch()
         if not patched then return end
+        if aimConnection then aimConnection:Disconnect(); aimConnection = nil end
+        if originalCamType then
+            pcall(function() Camera.CameraType = originalCamType end)
+            originalCamType = nil
+        end
+        
         local networkMod = ReplicatedStorage:FindFirstChild("Modules")
         if not networkMod then return end
         local actorsMod = networkMod:FindFirstChild("Actors")
         if not actorsMod then return end
         local ok, actors = pcall(require, actorsMod)
         if not ok or not actors then return end
+        
         local actor
         if actors.CurrentActors then
             for _, a in ipairs(actors.CurrentActors) do
@@ -1116,14 +1093,14 @@ do
         patched = false
         killerMotionData = {}
     end
-
+    
     function CrystalPitch.cleanup()
         CrystalPitch.unpatch()
+        if aimConnection then aimConnection:Disconnect(); aimConnection = nil end
     end
 end
 
 -- ==================== ELLIOT AIMBOT MODULE ====================
--- Source: Elliot Script Enhanced Edition (integrated)
 local ElliotAimbot = {}
 do
     local renderConnection  = nil
@@ -1134,7 +1111,6 @@ do
     local throwTimestamp    = 0
     local elliotRemoteEvent = nil
 
-    -- Pizza arc visualization
     local showArc     = false
     local arcFolder   = nil
     local arcParts    = {}
@@ -1144,8 +1120,8 @@ do
     local pizzaGravity        = 196.2
 
     local function setupElliotCharacter(character)
-        elliotHumanoid   = character:WaitForChild("Humanoid", 5)
-        elliotRootPart   = character:WaitForChild("HumanoidRootPart", 5)
+        elliotHumanoid   = character:FindFirstChildOfClass("Humanoid")
+        elliotRootPart   = character:FindFirstChild("HumanoidRootPart")
     end
 
     local function clearArc()
@@ -1398,7 +1374,6 @@ do
             chatScreenGui.DisplayOrder = 10
             chatScreenGui.Parent = playerGui
 
-            -- FIX: Position center-left (16px from left edge, vertically centered)
             chatWindow = Instance.new("Frame")
             chatWindow.Name = "ChatLoggerUI"
             chatWindow.Size = UDim2.new(0, 450, 0, 250)
@@ -1414,7 +1389,6 @@ do
             corner.CornerRadius = UDim.new(0, 8)
             corner.Parent = chatWindow
 
-            -- Title bar
             local titleBar = Instance.new("Frame")
             titleBar.Name = "TitleBar"
             titleBar.Size = UDim2.new(1, 0, 0, 32)
@@ -1537,16 +1511,12 @@ do
             sendCorner.CornerRadius = UDim.new(0, 4)
             sendCorner.Parent = sendBtn
 
-            -- FIX: sendMessage now immediately shows the message in the log
-            -- and also tries TextChatService as a fallback
             local function sendMessage()
                 local msg = chatInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
                 if msg == "" then return end
 
-                -- Show immediately in log (before any server round-trip)
                 ChatLogger.addMessage(LocalPlayer.Name, msg, "self")
 
-                -- Try game remote first
                 pcall(function()
                     local networkMod = ReplicatedStorage:FindFirstChild("Modules")
                     if networkMod then
@@ -1560,7 +1530,6 @@ do
                     end
                 end)
 
-                -- Fallback: TextChatService SendAsync
                 pcall(function()
                     local tcs = game:GetService("TextChatService")
                     local channels = tcs and tcs.TextChannels
@@ -1577,7 +1546,6 @@ do
 
             sendBtn.MouseButton1Click:Connect(sendMessage)
 
-            -- Draggable
             local dragging = false
             local dragStart, startPos
 
@@ -1674,7 +1642,6 @@ do
             )
             line.Parent = msgFrame
 
-            -- Scroll to bottom after layout
             task.defer(function()
                 pcall(function()
                     chatScrollingFrame.CanvasPosition = Vector2.new(
@@ -1684,7 +1651,6 @@ do
                 end)
             end)
 
-            -- Prune old messages
             local frames = {}
             for _, c in ipairs(chatScrollingFrame:GetChildren()) do
                 if c:IsA("Frame") then table.insert(frames, c) end
@@ -1712,7 +1678,6 @@ do
                 if gen then
                     local conn = gen.MessageReceived:Connect(function(msg)
                         local sender = msg.TextSource and msg.TextSource.Name or "System"
-                        -- FIX: skip own messages to avoid double-logging
                         if sender == LocalPlayer.Name then return end
                         local content = msg.Text or ""
                         if S.chatLogEnabled then
@@ -3186,7 +3151,7 @@ do
     local tab = Tabs.Combat
     pcall(function()
         local sCrystal = tab:Section({Title="Crystal Pitch (Jane Doe)", Opened=true})
-        sCrystal:Toggle({Title="Enable Crystal Pitch", Value=S.crystalPitchEnabled, Callback=function(v)
+        sCrystal:Toggle({Title="Enable Crystal Pitch (Silent Aim)", Value=S.crystalPitchEnabled, Callback=function(v)
             S.crystalPitchEnabled = v; set("crystalPitchEnabled", v)
             if v then
                 if waitForModules() then CrystalPitch.patch() end
@@ -3194,17 +3159,21 @@ do
                 CrystalPitch.unpatch()
             end
         end})
-        sCrystal:Toggle({Title="Auto-Aim to Head", Value=S.crystalPitchAimbot, Callback=function(v)
+        sCrystal:Toggle({Title="Silent Aim (Head)", Value=S.crystalPitchAimbot, Callback=function(v)
             S.crystalPitchAimbot = v; set("crystalPitchAimbot", v)
             if S.crystalPitchEnabled then CrystalPitch.unpatch(); task.wait(0.1); if waitForModules() then CrystalPitch.patch() end end
         end})
         sCrystal:Slider({Title="Prediction Time", Value={Min=0, Max=2, Default=S.crystalPrediction}, Step=0.01, Callback=function(v)
             S.crystalPrediction = tonumber(v) or 0.6; set("crystalPrediction", S.crystalPrediction)
         end})
+        sCrystal:Paragraph({
+            Title = "Info",
+            Description = "Hold duration fixed at 2 seconds for full charge.\nUses silent aim - camera moves but mouse doesn't.\nAims at killer's head with velocity prediction."
+        })
         sCrystal:Button({Title="Manual Repatch", Callback=function()
             CrystalPitch.unpatch(); task.wait(0.2)
             if waitForModules() then CrystalPitch.patch() end
-            WindUI:Notify({Title="Crystal Pitch", Content="Repatched!", Icon="refresh-cw", Duration=2})
+            WindUI:Notify({Title="Crystal Pitch", Content="Repatched! (Silent Aim - Head + 2s)", Icon="refresh-cw", Duration=2})
         end})
     end)
 end
@@ -3622,7 +3591,7 @@ task.wait(1)
 pcall(function()
     WindUI:Notify({
         Title = "lovesaken",
-        Content = "Loaded! script fixed and ready love u pookies.",
+        Content = "Loaded! Crystal Pitch uses SILENT AIM - aims at head with 2s hold!",
         Icon = "sparkles",
         Duration = 5,
     })

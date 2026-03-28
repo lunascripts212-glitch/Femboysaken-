@@ -314,25 +314,29 @@ local TRIGGER_SOUNDS = {
     ["131406927389838"]=true,["117173212095661"]=true,["71834552297085"]=true,
     ["805165833096"]=true,["80516583309685"]=true,["76959687420003"]=true,
     ["107444859834748"]=true,["86833981571073"]=true,["110372418055226"]=true,
-    ["86494585504534"]=true,["121369993837377"]=true,  -- REMOVED: 132331977491979
+    ["86494585504534"]=true,["121369993837377"]=true,
     ["18782451032"]=true,["80587845277702"]=true,["94317217837143"]=true,
     ["136728245733659"]=true,["104910828105172"]=true,["98111231282218"]=true,
     ["71310583817000"]=true,["124903763333174"]=true,["72425554233832"]=true,
     ["131123355704017"]=true,["128856426573270"]=true,["128195973631079"]=true,
     ["128367348686124"]=true,["105204810054381"]=true,["98675142200448"]=true,
 }
+
 local function getKillersFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Killers")
 end
+
 local function getSurvivorsFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Survivors")
 end
+
 local function getIngameFolder()
     local m = Workspace:FindFirstChild("Map")
     return m and m:FindFirstChild("Ingame")
 end
+
 local function getCurrentMapFolder()
     local ig = getIngameFolder()
     return ig and ig:FindFirstChild("Map")
@@ -726,8 +730,8 @@ do
     end
 end
 
--- ==================== CRYSTAL PITCH MODULE ====================
--- Source: LoveThrow by LoveSaken Team (integrated)
+-- ==================== CRYSTAL PITCH MODULE (FIXED) ====================
+-- Source: LoveThrow by LoveSaken Team (Fixed UI & State Reset)
 local CrystalPitch = {}
 do
     local patched       = false
@@ -735,7 +739,18 @@ do
     local killerMotionData = {}
     local HEAD_OFFSET   = 1.5
     local NetworkRF     = nil
-
+    local HOLD_DURATION = 2.0
+    local arcParams     = nil
+    
+    -- Setup arc params
+    do
+        arcParams = RaycastParams.new()
+        arcParams.RespectCanCollide = true
+        arcParams.CollisionGroup    = "Killers"
+        arcParams.FilterType        = Enum.RaycastFilterType.Exclude
+        pcall(function() arcParams.FilterDescendantsInstances = {Workspace:FindFirstChild("Players")} end)
+    end
+    
     local function getKillerVelocity(hrp)
         local now  = tick()
         local pos  = hrp.Position
@@ -799,12 +814,6 @@ do
         return cs0, -cs1, startCF, endCF
     end
 
-    local arcParams = RaycastParams.new()
-    arcParams.RespectCanCollide = true
-    arcParams.CollisionGroup    = "Killers"
-    arcParams.FilterType        = Enum.RaycastFilterType.Exclude
-    pcall(function() arcParams.FilterDescendantsInstances = {Workspace:FindFirstChild("Players")} end)
-
     local function traceArc(gravity, initVel, origin)
         local prev    = origin
         local hitTime = 5
@@ -824,13 +833,13 @@ do
     local function getThrowPhysics(myHRP, killer, abilityCfg)
         local killerHRP = killer:FindFirstChild("HumanoidRootPart")
         if not killerHRP then return nil end
-        local vel           = getKillerVelocity(killerHRP)
+        local vel = getKillerVelocity(killerHRP)
         local killerHeadPos = getKillerHeadPosition(killer)
         if not killerHeadPos then return nil end
         local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
         local hipH     = hum and hum.HipHeight or 1.35
         local v238     = (hipH + myHRP.Size.Y / 2) / 2
-        local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+        local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
         local predicted = killerHeadPos + vel * S.crystalPrediction
         local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
         local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
@@ -877,14 +886,14 @@ do
         local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
         pcall(function()
             if indicator.Beam then
-                indicator.Beam.CurveSize0        = cs0
-                indicator.Beam.CurveSize1        = cs1
+                indicator.Beam.CurveSize0 = cs0
+                indicator.Beam.CurveSize1 = cs1
             end
             if indicator.AttachmentStart then
                 indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
             end
             if indicator.AttachmentEnd then
-                indicator.AttachmentEnd.CFrame   = Workspace.Terrain.CFrame:Inverse() * endCF
+                indicator.AttachmentEnd.CFrame = Workspace.Terrain.CFrame:Inverse() * endCF
             end
             if indicator.Target then
                 indicator.Target:PivotTo(endCF)
@@ -1031,7 +1040,7 @@ do
                     if bar then
                         local startTime = tick()
                         fillConn = RunService.Heartbeat:Connect(function()
-                            local progress = math.clamp((tick() - startTime) / 2.0, 0, 1)
+                            local progress = math.clamp((tick() - startTime) / HOLD_DURATION, 0, 1)
                             pcall(function()
                                 bar.Size = UDim2.new(progress, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
                                 bar.ImageColor3 = Color3.fromHSV(progress * 0.35, 1, 1)
@@ -1061,7 +1070,7 @@ do
                 end)
             end
             task.spawn(function()
-                task.wait(2.0)
+                task.wait(HOLD_DURATION)
                 if fillConn then fillConn:Disconnect(); fillConn = nil end
                 if chargeUI then pcall(function() chargeUI:Destroy() end); chargeUI = nil end
                 if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
@@ -1123,7 +1132,6 @@ do
 end
 
 -- ==================== ELLIOT AIMBOT MODULE ====================
--- Source: Elliot Script Enhanced Edition (integrated)
 local ElliotAimbot = {}
 do
     local renderConnection  = nil
@@ -1134,7 +1142,6 @@ do
     local throwTimestamp    = 0
     local elliotRemoteEvent = nil
 
-    -- Pizza arc visualization
     local showArc     = false
     local arcFolder   = nil
     local arcParts    = {}
@@ -1144,8 +1151,8 @@ do
     local pizzaGravity        = 196.2
 
     local function setupElliotCharacter(character)
-        elliotHumanoid   = character:WaitForChild("Humanoid", 5)
-        elliotRootPart   = character:WaitForChild("HumanoidRootPart", 5)
+        elliotHumanoid   = character:FindFirstChildOfClass("Humanoid")
+        elliotRootPart   = character:FindFirstChild("HumanoidRootPart")
     end
 
     local function clearArc()
@@ -1398,7 +1405,6 @@ do
             chatScreenGui.DisplayOrder = 10
             chatScreenGui.Parent = playerGui
 
-            -- FIX: Position center-left (16px from left edge, vertically centered)
             chatWindow = Instance.new("Frame")
             chatWindow.Name = "ChatLoggerUI"
             chatWindow.Size = UDim2.new(0, 450, 0, 250)
@@ -1414,7 +1420,6 @@ do
             corner.CornerRadius = UDim.new(0, 8)
             corner.Parent = chatWindow
 
-            -- Title bar
             local titleBar = Instance.new("Frame")
             titleBar.Name = "TitleBar"
             titleBar.Size = UDim2.new(1, 0, 0, 32)
@@ -1537,16 +1542,12 @@ do
             sendCorner.CornerRadius = UDim.new(0, 4)
             sendCorner.Parent = sendBtn
 
-            -- FIX: sendMessage now immediately shows the message in the log
-            -- and also tries TextChatService as a fallback
             local function sendMessage()
                 local msg = chatInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
                 if msg == "" then return end
 
-                -- Show immediately in log (before any server round-trip)
                 ChatLogger.addMessage(LocalPlayer.Name, msg, "self")
 
-                -- Try game remote first
                 pcall(function()
                     local networkMod = ReplicatedStorage:FindFirstChild("Modules")
                     if networkMod then
@@ -1560,7 +1561,6 @@ do
                     end
                 end)
 
-                -- Fallback: TextChatService SendAsync
                 pcall(function()
                     local tcs = game:GetService("TextChatService")
                     local channels = tcs and tcs.TextChannels
@@ -1577,7 +1577,6 @@ do
 
             sendBtn.MouseButton1Click:Connect(sendMessage)
 
-            -- Draggable
             local dragging = false
             local dragStart, startPos
 
@@ -1674,7 +1673,6 @@ do
             )
             line.Parent = msgFrame
 
-            -- Scroll to bottom after layout
             task.defer(function()
                 pcall(function()
                     chatScrollingFrame.CanvasPosition = Vector2.new(
@@ -1684,7 +1682,6 @@ do
                 end)
             end)
 
-            -- Prune old messages
             local frames = {}
             for _, c in ipairs(chatScrollingFrame:GetChildren()) do
                 if c:IsA("Frame") then table.insert(frames, c) end
@@ -1712,7 +1709,6 @@ do
                 if gen then
                     local conn = gen.MessageReceived:Connect(function(msg)
                         local sender = msg.TextSource and msg.TextSource.Name or "System"
-                        -- FIX: skip own messages to avoid double-logging
                         if sender == LocalPlayer.Name then return end
                         local content = msg.Text or ""
                         if S.chatLogEnabled then

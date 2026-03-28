@@ -314,14 +314,13 @@ local TRIGGER_SOUNDS = {
     ["131406927389838"]=true,["117173212095661"]=true,["71834552297085"]=true,
     ["805165833096"]=true,["80516583309685"]=true,["76959687420003"]=true,
     ["107444859834748"]=true,["86833981571073"]=true,["110372418055226"]=true,
-    ["86494585504534"]=true,["121369993837377"]=true,["132331977491979"]=true,
+    ["86494585504534"]=true,["121369993837377"]=true,  -- REMOVED: 132331977491979
     ["18782451032"]=true,["80587845277702"]=true,["94317217837143"]=true,
     ["136728245733659"]=true,["104910828105172"]=true,["98111231282218"]=true,
     ["71310583817000"]=true,["124903763333174"]=true,["72425554233832"]=true,
     ["131123355704017"]=true,["128856426573270"]=true,["128195973631079"]=true,
     ["128367348686124"]=true,["105204810054381"]=true,["98675142200448"]=true,
 }
-
 local function getKillersFolder()
     local p = Workspace:FindFirstChild("Players")
     return p and p:FindFirstChild("Killers")
@@ -1373,7 +1372,6 @@ end
 -- ==================== CHAT LOGGER WITH INPUT ====================
 local ChatLogger = {}
 do
-    local chatMessages = {}
     local chatConnections = {}
     local chatWindow = nil
     local chatScreenGui = nil
@@ -1389,6 +1387,7 @@ do
         Team      = Color3.fromRGB(0, 255, 255),
         Error     = Color3.fromRGB(255, 100, 100),
         Timestamp = Color3.fromRGB(130, 130, 130),
+        Self      = Color3.fromRGB(140, 220, 255),
     }
 
     function ChatLogger.createUI()
@@ -1405,12 +1404,12 @@ do
             chatScreenGui.DisplayOrder = 10
             chatScreenGui.Parent = playerGui
 
-            -- Main chat window
+            -- FIX: Position center-left (16px from left edge, vertically centered)
             chatWindow = Instance.new("Frame")
             chatWindow.Name = "ChatLoggerUI"
-            chatWindow.Size = UDim2.new(0, 450, 0, 350)
-            chatWindow.Position = UDim2.new(0.5, -225, 0.5, -175)
-            chatWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+            chatWindow.Size = UDim2.new(0, 450, 0, 250)
+            chatWindow.Position = UDim2.new(0, 16, 0.5, -80)
+            chatWindow.AnchorPoint = Vector2.new(0, 0)
             chatWindow.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
             chatWindow.BackgroundTransparency = 0.15
             chatWindow.BorderSizePixel = 0
@@ -1445,7 +1444,6 @@ do
             titleText.Font = Enum.Font.GothamBold
             titleText.Parent = titleBar
 
-            -- Close button
             local closeBtn = Instance.new("TextButton")
             closeBtn.Size = UDim2.new(0, 32, 1, 0)
             closeBtn.Position = UDim2.new(1, -32, 0, 0)
@@ -1459,7 +1457,6 @@ do
                 chatWindow.Visible = false
             end)
 
-            -- Minimize button
             local minBtn = Instance.new("TextButton")
             minBtn.Size = UDim2.new(0, 32, 1, 0)
             minBtn.Position = UDim2.new(1, -64, 0, 0)
@@ -1473,7 +1470,6 @@ do
                 chatWindow.Visible = false
             end)
 
-            -- Scrolling frame for messages
             chatScrollingFrame = Instance.new("ScrollingFrame")
             chatScrollingFrame.Name = "ChatScroller"
             chatScrollingFrame.Size = UDim2.new(1, 0, 1, -70)
@@ -1487,7 +1483,6 @@ do
             chatScrollingFrame.VerticalScrollBarPosition = Enum.VerticalScrollBarPosition.Right
             chatScrollingFrame.Parent = chatWindow
 
-            -- Container for messages
             chatContainer = Instance.new("UIListLayout")
             chatContainer.Parent = chatScrollingFrame
             chatContainer.SortOrder = Enum.SortOrder.LayoutOrder
@@ -1500,7 +1495,6 @@ do
             padding.PaddingBottom = UDim.new(0, 5)
             padding.Parent = chatScrollingFrame
 
-            -- Input frame at bottom
             local inputFrame = Instance.new("Frame")
             inputFrame.Name = "InputFrame"
             inputFrame.Size = UDim2.new(1, 0, 0, 38)
@@ -1514,10 +1508,9 @@ do
             inputCorner.CornerRadius = UDim.new(0, 6)
             inputCorner.Parent = inputFrame
 
-            -- Chat input box
             chatInput = Instance.new("TextBox")
             chatInput.Name = "ChatInput"
-            chatInput.Size = UDim2.new(1, -16, 1, -8)
+            chatInput.Size = UDim2.new(1, -56, 1, -8)
             chatInput.Position = UDim2.new(0, 8, 0, 4)
             chatInput.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
             chatInput.BackgroundTransparency = 0.3
@@ -1526,7 +1519,7 @@ do
             chatInput.TextSize = 13
             chatInput.TextXAlignment = Enum.TextXAlignment.Left
             chatInput.Font = Enum.Font.Gotham
-            chatInput.PlaceholderText = "Type a message... (Press Enter to send)"
+            chatInput.PlaceholderText = "Type a message... (Enter to send)"
             chatInput.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
             chatInput.ClearTextOnFocus = false
             chatInput.Parent = inputFrame
@@ -1535,7 +1528,6 @@ do
             inputCorner2.CornerRadius = UDim.new(0, 4)
             inputCorner2.Parent = chatInput
 
-            -- Send button
             local sendBtn = Instance.new("TextButton")
             sendBtn.Size = UDim2.new(0, 40, 1, -8)
             sendBtn.Position = UDim2.new(1, -48, 0, 4)
@@ -1551,45 +1543,47 @@ do
             sendCorner.CornerRadius = UDim.new(0, 4)
             sendCorner.Parent = sendBtn
 
-            -- Send message function
+            -- FIX: sendMessage now immediately shows the message in the log
+            -- and also tries TextChatService as a fallback
             local function sendMessage()
                 local msg = chatInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
-                if msg ~= "" then
-                    -- Send to game chat
-                    pcall(function()
-                        local networkMod = ReplicatedStorage:FindFirstChild("Modules")
-                        if networkMod then
-                            local network = networkMod:FindFirstChild("Network")
-                            if network then
-                                local remoteEvent = network:FindFirstChild("RemoteEvent")
-                                if remoteEvent then
-                                    remoteEvent:FireServer("SendChatMessage", msg)
-                                end
+                if msg == "" then return end
+
+                -- Show immediately in log (before any server round-trip)
+                ChatLogger.addMessage(LocalPlayer.Name, msg, "self")
+
+                -- Try game remote first
+                pcall(function()
+                    local networkMod = ReplicatedStorage:FindFirstChild("Modules")
+                    if networkMod then
+                        local network = networkMod:FindFirstChild("Network")
+                        if network then
+                            local remoteEvent = network:FindFirstChild("RemoteEvent")
+                            if remoteEvent then
+                                remoteEvent:FireServer("SendChatMessage", msg)
                             end
                         end
-                        -- Fallback for older chat system
-                        local chatService = game:GetService("Chat")
-                        if chatService and chatService:FindFirstChild("SendMessage") then
-                            chatService:SendMessage(msg)
-                        end
-                    end)
-                    chatInput.Text = ""
-                end
+                    end
+                end)
+
+                -- Fallback: TextChatService SendAsync
+                pcall(function()
+                    local tcs = game:GetService("TextChatService")
+                    local channels = tcs and tcs.TextChannels
+                    local gen = channels and channels:FindFirstChild("RBXGeneral")
+                    if gen then gen:SendAsync(msg) end
+                end)
+
+                chatInput.Text = ""
             end
 
-            -- Enter key to send
             chatInput.FocusLost:Connect(function(enterPressed)
-                if enterPressed then
-                    sendMessage()
-                end
+                if enterPressed then sendMessage() end
             end)
 
-            -- Send button click
-            sendBtn.MouseButton1Click:Connect(function()
-                sendMessage()
-            end)
+            sendBtn.MouseButton1Click:Connect(sendMessage)
 
-            -- Make window draggable
+            -- Draggable
             local dragging = false
             local dragStart, startPos
 
@@ -1644,6 +1638,9 @@ do
             elseif messageType == "team" then
                 nameColor = COLORS.Team
                 prefix = "[team] "
+            elseif messageType == "self" then
+                nameColor = COLORS.Self
+                prefix = ""
             elseif messageType == "error" then
                 textColor = COLORS.Error
             end
@@ -1683,11 +1680,17 @@ do
             )
             line.Parent = msgFrame
 
-            task.wait()
-            chatScrollingFrame.CanvasPosition = Vector2.new(
-                0, math.max(0, chatScrollingFrame.AbsoluteCanvasSize.Y - chatScrollingFrame.AbsoluteSize.Y)
-            )
+            -- Scroll to bottom after layout
+            task.defer(function()
+                pcall(function()
+                    chatScrollingFrame.CanvasPosition = Vector2.new(
+                        0,
+                        math.max(0, chatScrollingFrame.AbsoluteCanvasSize.Y - chatScrollingFrame.AbsoluteSize.Y)
+                    )
+                end)
+            end)
 
+            -- Prune old messages
             local frames = {}
             for _, c in ipairs(chatScrollingFrame:GetChildren()) do
                 if c:IsA("Frame") then table.insert(frames, c) end
@@ -1709,13 +1712,14 @@ do
             end
             chatConnections = {}
 
-            -- Hook into TextChatService for receiving messages
             local tcs = TextChatService
             if tcs and tcs.TextChannels then
                 local gen = tcs.TextChannels:FindFirstChild("RBXGeneral")
                 if gen then
                     local conn = gen.MessageReceived:Connect(function(msg)
                         local sender = msg.TextSource and msg.TextSource.Name or "System"
+                        -- FIX: skip own messages to avoid double-logging
+                        if sender == LocalPlayer.Name then return end
                         local content = msg.Text or ""
                         if S.chatLogEnabled then
                             ChatLogger.addMessage(sender, content, "player")
@@ -1729,6 +1733,7 @@ do
                     if ch.Name == "RBXGeneral" then return end
                     local conn = ch.MessageReceived:Connect(function(msg)
                         local sender = msg.TextSource and msg.TextSource.Name or "System"
+                        if sender == LocalPlayer.Name then return end
                         local content = msg.Text or ""
                         if S.chatLogEnabled then
                             local mtype = ch.Name:lower():find("team") and "team" or "player"
@@ -1742,14 +1747,13 @@ do
                     hookChannel(ch)
                 end
                 local newConn = tcs.TextChannels.ChildAdded:Connect(function(ch)
-                    task.wait(0.1)
-                    hookChannel(ch)
+                    task.wait(0.1); hookChannel(ch)
                 end)
                 table.insert(chatConnections, newConn)
             end
 
             if S.chatLogEnabled then
-                ChatLogger.addMessage("System", "Chat logger active! Type in the box below to chat.", "system")
+                ChatLogger.addMessage("System", "Chat logger active! Type below to chat.", "system")
             end
         end)
     end
@@ -1761,7 +1765,6 @@ do
                     if child:IsA("Frame") then child:Destroy() end
                 end
             end
-            chatMessages = {}
             msgOrder = 0
             ChatLogger.addMessage("System", "Chat log cleared!", "system")
         end)
@@ -1786,10 +1789,10 @@ do
         chatScrollingFrame = nil
         chatContainer = nil
         chatInput = nil
-        chatMessages = {}
         msgOrder = 0
     end
 end
+
 -- ==================== ANTI-TAPH MODULE ====================
 local AntiTaph = {}
 do
@@ -3325,7 +3328,7 @@ do
 
         sChat:Paragraph({
             Title = "Chat Window Info",
-            Description = "Sits bottom-left like normal Roblox chat.\nDrag title bar to move. Click ✕ to hide."
+            Description = "Positioned center-left. Drag title bar to move. Click ✕ to hide."
         })
 
         sChat:Divider()
@@ -3649,7 +3652,7 @@ task.wait(1)
 pcall(function()
     WindUI:Notify({
         Title = "lovesaken",
-        Content = "Loaded! Chat logger fixed & ready.",
+        Content = "Loaded! script fixed and ready love u pookies.",
         Icon = "sparkles",
         Duration = 5,
     })

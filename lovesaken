@@ -727,23 +727,18 @@ do
 end
 
 -- ==================== CRYSTAL PITCH MODULE ====================
+-- Source: LoveThrow by LoveSaken Team (integrated)
 local CrystalPitch = {}
 do
-    local NetworkRF = nil
-    local crystalPatched = false
-    local originalCallback = nil
-    local actorAbilities = nil
-    local crystalIndicator = nil
-    local indicatorConn = nil
-    local chargeUI = nil
-    local fillConn = nil
-    local holdDuration = 2.0
+    local patched       = false
+    local crystalCB     = nil
     local killerMotionData = {}
-    local HEAD_OFFSET = 1.5
+    local HEAD_OFFSET   = 1.5
+    local NetworkRF     = nil
 
     local function getKillerVelocity(hrp)
-        local now = tick()
-        local pos = hrp.Position
+        local now  = tick()
+        local pos  = hrp.Position
         local data = killerMotionData[hrp]
         if not data then
             killerMotionData[hrp] = { lastPos = pos, lastTime = now, velocity = Vector3.zero }
@@ -751,10 +746,10 @@ do
         end
         local dt = now - data.lastTime
         if dt <= 0 then return data.velocity end
-        local vel = (pos - data.lastPos) / dt
-        data.lastPos = pos
-        data.lastTime = now
-        data.velocity = vel
+        local vel      = (pos - data.lastPos) / dt
+        data.lastPos   = pos
+        data.lastTime  = now
+        data.velocity  = vel
         return vel
     end
 
@@ -783,19 +778,20 @@ do
     end
 
     local function computeArcCurve(gravity, initVel, origin, impactTime)
-        local t2 = impactTime * impactTime
-        local vt = initVel * impactTime
+        local t2   = impactTime * impactTime
+        local vt   = initVel * impactTime
         local endP = 0.5 * gravity * t2 + vt + origin
-        local cp1 = endP - (gravity * t2 + vt) / 3
-        local cp2 = (0.125 * gravity * t2 + 0.5 * vt + origin - 0.125 * (origin + endP)) / 0.375 - cp1
-        local cs0 = (cp2 - origin).Magnitude
-        local cs1 = (cp1 - endP).Magnitude
-        local back = (origin - endP).Unit
-        local fwd = (cp2 - origin).Unit
-        local up = fwd:Cross(back).Unit
+        local cp1  = endP - (gravity * t2 + vt) / 3
+        local cp2  = (0.125 * gravity * t2 + 0.5 * vt + origin
+                      - 0.125 * (origin + endP)) / 0.375 - cp1
+        local cs0  = (cp2 - origin).Magnitude
+        local cs1  = (cp1 - endP).Magnitude
+        local back  = (origin - endP).Unit
+        local fwd   = (cp2 - origin).Unit
+        local up    = fwd:Cross(back).Unit
         local right = up:Cross(fwd).Unit
-        local fwdE = (cp1 - endP).Unit
-        local upE = fwdE:Cross(back).Unit
+        local fwdE  = (cp1 - endP).Unit
+        local upE   = fwdE:Cross(back).Unit
         local startCF = CFrame.new(origin.X, origin.Y, origin.Z,
             fwd.X, up.X, right.X, fwd.Y, up.Y, right.Y, fwd.Z, up.Z, right.Z)
         local endCF = CFrame.new(endP.X, endP.Y, endP.Z,
@@ -805,17 +801,17 @@ do
 
     local arcParams = RaycastParams.new()
     arcParams.RespectCanCollide = true
-    arcParams.CollisionGroup = "Killers"
-    arcParams.FilterType = Enum.RaycastFilterType.Exclude
+    arcParams.CollisionGroup    = "Killers"
+    arcParams.FilterType        = Enum.RaycastFilterType.Exclude
     pcall(function() arcParams.FilterDescendantsInstances = {Workspace:FindFirstChild("Players")} end)
 
     local function traceArc(gravity, initVel, origin)
-        local prev = origin
+        local prev    = origin
         local hitTime = 5
         for t = 0.05, 5, 0.05 do
-            local pos = gravity * 0.5 * t * t + initVel * t + origin
+            local pos  = gravity * 0.5 * t * t + initVel * t + origin
             local step = pos - prev
-            local hit = Workspace:Raycast(prev, step, arcParams)
+            local hit  = Workspace:Raycast(prev, step, arcParams)
             if hit then
                 hitTime = t - 0.05 + (hit.Position - prev).Magnitude / step.Magnitude * 0.05
                 break
@@ -828,18 +824,50 @@ do
     local function getThrowPhysics(myHRP, killer, abilityCfg)
         local killerHRP = killer:FindFirstChild("HumanoidRootPart")
         if not killerHRP then return nil end
-        local vel = getKillerVelocity(killerHRP)
+        local vel           = getKillerVelocity(killerHRP)
         local killerHeadPos = getKillerHeadPosition(killer)
         if not killerHeadPos then return nil end
-        local hum = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-        local hipH = hum and hum.HipHeight or 1.35
-        local v238 = (hipH + myHRP.Size.Y / 2) / 2
-        local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+        local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+        local hipH     = hum and hum.HipHeight or 1.35
+        local v238     = (hipH + myHRP.Size.Y / 2) / 2
+        local spawnPos  = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
         local predicted = killerHeadPos + vel * S.crystalPrediction
-        local throwDir = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
-        local initVel = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
-        local gravity = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
+        local throwDir  = CFrame.lookAt(myHRP.Position, predicted) * CFrame.new(0, 0, -500)
+        local initVel   = (throwDir.Position - spawnPos).Unit * abilityCfg.MaxSpeed
+        local gravity   = Vector3.new(0, -abilityCfg.ProjectileArc, 0)
         return spawnPos, initVel, gravity, predicted
+    end
+
+    local function buildSpoofCF(myHRP, killer, abilityCfg)
+        local killerHRP = killer:FindFirstChild("HumanoidRootPart")
+        if not killerHRP then return Camera.CFrame end
+        local vel = getKillerVelocity(killerHRP)
+        local v0  = abilityCfg.MaxSpeed
+        local g   = abilityCfg.ProjectileArc
+        local killerHeadPos = getKillerHeadPosition(killer)
+        if not killerHeadPos then return Camera.CFrame end
+        local hum      = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
+        local hipH     = hum and hum.HipHeight or 1.35
+        local v238     = (hipH + myHRP.Size.Y / 2) / 2
+        local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
+        local target   = killerHeadPos + vel * S.crystalPrediction
+        local delta    = target - spawnPos
+        local flatV    = Vector3.new(delta.X, 0, delta.Z)
+        local dx       = flatV.Magnitude
+        local dy       = delta.Y
+        if dx < 0.01 then
+            local d = dy >= 0 and Vector3.new(0, 1, 0) or Vector3.new(0, -1, 0)
+            return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + d)
+        end
+        local flatDir = flatV.Unit
+        local v2   = v0 * v0
+        local disc = v2 * v2 - g * (g * dx * dx + 2 * dy * v2)
+        local theta = disc < 0 and math.atan2(dy, dx) or math.atan2(v2 - math.sqrt(disc), g * dx)
+        local T     = math.tan(theta)
+        local denom = 3 + T
+        local alpha = math.abs(denom) < 0.0001 and -math.pi / 2 or math.atan2(3 * T - 1, denom)
+        local yawCF = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + flatDir)
+        return yawCF * CFrame.Angles(alpha, 0, 0)
     end
 
     local function updateBeam(indicator, myHRP, killer, abilityCfg)
@@ -849,14 +877,14 @@ do
         local cs0, cs1, startCF, endCF = traceArc(gravity, initVel, spawnPos)
         pcall(function()
             if indicator.Beam then
-                indicator.Beam.CurveSize0 = cs0
-                indicator.Beam.CurveSize1 = cs1
+                indicator.Beam.CurveSize0        = cs0
+                indicator.Beam.CurveSize1        = cs1
             end
             if indicator.AttachmentStart then
                 indicator.AttachmentStart.CFrame = myHRP.CFrame:Inverse() * startCF
             end
             if indicator.AttachmentEnd then
-                indicator.AttachmentEnd.CFrame = Workspace.Terrain.CFrame:Inverse() * endCF
+                indicator.AttachmentEnd.CFrame   = Workspace.Terrain.CFrame:Inverse() * endCF
             end
             if indicator.Target then
                 indicator.Target:PivotTo(endCF)
@@ -864,41 +892,20 @@ do
         end)
     end
 
-    local function buildSpoofCF(myHRP, killer, abilityCfg)
-        local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-        if not killerHRP then return Camera.CFrame end
-        local vel = getKillerVelocity(killerHRP)
-        local v0 = abilityCfg.MaxSpeed
-        local g = abilityCfg.ProjectileArc
-        local killerHeadPos = getKillerHeadPosition(killer)
-        if not killerHeadPos then return Camera.CFrame end
-        local hum = myHRP.Parent and myHRP.Parent:FindFirstChildOfClass("Humanoid")
-        local hipH = hum and hum.HipHeight or 1.35
-        local v238 = (hipH + myHRP.Size.Y / 2) / 2
-        local spawnPos = myHRP.CFrame.Position + Vector3.new(0, v238, 0)
-        local target = killerHeadPos + vel * S.crystalPrediction
-        local delta = target - spawnPos
-        local flatV = Vector3.new(delta.X, 0, delta.Z)
-        local dx = flatV.Magnitude
-        local dy = delta.Y
-        if dx < 0.01 then
-            local d = dy >= 0 and Vector3.new(0, 1, 0) or Vector3.new(0, -1, 0)
-            return CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + d)
-        end
-        local flatDir = flatV.Unit
-        local v2 = v0 * v0
-        local disc = v2 * v2 - g * (g * dx * dx + 2 * dy * v2)
-        local theta = disc < 0 and math.atan2(dy, dx) or math.atan2(v2 - math.sqrt(disc), g * dx)
-        local T = math.tan(theta)
-        local denom = 3 + T
-        local alpha = math.abs(denom) < 0.0001 and -math.pi / 2 or math.atan2(3 * T - 1, denom)
-        local yawCF = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + flatDir)
-        return yawCF * CFrame.Angles(alpha, 0, 0)
+    local function getNetworkRF()
+        pcall(function()
+            local net = ReplicatedStorage:FindFirstChild("Modules")
+            if net then
+                net = net:FindFirstChild("Network")
+                if net then NetworkRF = net:FindFirstChild("RemoteFunction") end
+            end
+        end)
+        return NetworkRF
     end
 
     local function doAimAndFire(myHRP, killer, fireCallback, abilityCfg)
         if S.isMobile then
-            local spoofCF = buildSpoofCF(myHRP, killer, abilityCfg)
+            local spoofCF    = buildSpoofCF(myHRP, killer, abilityCfg)
             local originalCB = NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke")
             local origDevice = LocalPlayer:GetAttribute("Device")
             local holdActive = true
@@ -907,9 +914,7 @@ do
 
             if NetworkRF then
                 NetworkRF.OnClientInvoke = function(reqName, ...)
-                    if reqName == "GetCameraCF" and holdActive then
-                        return spoofCF
-                    end
+                    if reqName == "GetCameraCF" and holdActive then return spoofCF end
                     if originalCB then return originalCB(reqName, ...) end
                 end
             end
@@ -918,7 +923,7 @@ do
             RunService.Heartbeat:Wait()
             fireCallback()
 
-            task.delay(holdDuration, function()
+            task.delay(2.0, function()
                 holdActive = false
                 if NetworkRF and getcallbackvalue(NetworkRF, "OnClientInvoke") ~= originalCB then
                     NetworkRF.OnClientInvoke = originalCB
@@ -930,14 +935,14 @@ do
             if not spawnPos then fireCallback(); return end
 
             local landPos = spawnPos
-            local prev = spawnPos
+            local prev    = spawnPos
             for t = 0.05, 5, 0.05 do
-                local pos = gravity * 0.5 * t * t + initVel * t + spawnPos
+                local pos  = gravity * 0.5 * t * t + initVel * t + spawnPos
                 local step = pos - prev
-                local hit = Workspace:Raycast(prev, step, arcParams)
+                local hit  = Workspace:Raycast(prev, step, arcParams)
                 if hit then landPos = hit.Position; break end
                 landPos = pos
-                prev = pos
+                prev    = pos
             end
 
             local screenPos, onScreen = Camera:WorldToScreenPoint(landPos)
@@ -952,21 +957,8 @@ do
         end
     end
 
-    local function getNetworkRF()
-        pcall(function()
-            local net = ReplicatedStorage:FindFirstChild("Modules")
-            if net then
-                net = net:FindFirstChild("Network")
-                if net then
-                    NetworkRF = net:FindFirstChild("RemoteFunction")
-                end
-            end
-        end)
-        return NetworkRF
-    end
-
-    local function fireCrystalAbility(actor, playerName)
-        local remoteName = ("%sCrystalInput"):format(playerName or "JaneDoe")
+    local function fireCrystalAbility(self)
+        local remoteName = ("%sCrystalInput"):format(self.Player and self.Player.Name or "JaneDoe")
         pcall(function()
             local networkMod = ReplicatedStorage:FindFirstChild("Modules")
             if networkMod then
@@ -975,18 +967,12 @@ do
                     networkMod.RemoteEvent:FireServer(remoteName, 1)
                     task.delay(0.1, function()
                         networkMod.RemoteEvent:FireServer(remoteName, 0)
-                        if actor and actor.Behavior and actor.Behavior.Abilities and actor.Behavior.Abilities.Crystal then
-                            if actor.Behavior.Abilities.Crystal.State then
-                                actor.Behavior.Abilities.Crystal.State.IsCrystalEquipped = false
-                            end
-                        end
+                        if self.State then self.State.IsCrystalEquipped = false end
                         pcall(function()
                             local util = ReplicatedStorage:FindFirstChild("Modules")
                             if util then
                                 util = util:FindFirstChild("Util")
-                                if util then
-                                    util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", false)
-                                end
+                                if util then util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", false) end
                             end
                         end)
                     end)
@@ -996,131 +982,89 @@ do
     end
 
     function CrystalPitch.patch()
-        if crystalPatched then return end
-
+        if patched then return end
         local networkMod = ReplicatedStorage:FindFirstChild("Modules")
         if not networkMod then return end
-
         local actorsMod = networkMod:FindFirstChild("Actors")
         if not actorsMod then return end
-
         local ok, actors = pcall(require, actorsMod)
         if not ok or not actors then return end
-
         getNetworkRF()
-
-        local function findLocalActor()
-            if actors.CurrentActors then
-                for _, actor in ipairs(actors.CurrentActors) do
-                    if actor.Player == LocalPlayer then
-                        return actor
-                    end
-                end
+        local actor
+        if actors.CurrentActors then
+            for _, a in ipairs(actors.CurrentActors) do
+                if a.Player == LocalPlayer then actor = a; break end
             end
-            return nil
         end
-
-        local actor = findLocalActor()
         if not actor or not actor.Behavior or not actor.Behavior.Abilities then return end
         if not actor.Behavior.Abilities.Crystal then return end
-
-        local crystalAbility = actor.Behavior.Abilities.Crystal
-        originalCallback = crystalAbility.Callback
-        actorAbilities = actor.Behavior.Abilities
-
-        crystalAbility.Callback = function(self, p290)
+        crystalCB = actor.Behavior.Abilities.Crystal.Callback
+        actor.Behavior.Abilities.Crystal.Callback = function(self, p290)
             if RunService:IsServer() then
-                if originalCallback then return originalCallback(self, p290) end
-                return
+                if crystalCB then return crystalCB(self, p290) end; return
             end
-
             if not S.crystalPitchEnabled then
-                if originalCallback then return originalCallback(self, p290) end
-                return
+                if crystalCB then return crystalCB(self, p290) end; return
             end
-
             if p290 == "Cancelled" or not p290 then
                 if self.State then self.State.IsCrystalEquipped = false end
-                if originalCallback then return originalCallback(self, p290) end
-                return
+                if crystalCB then return crystalCB(self, p290) end; return
             end
-
             local result
-            if originalCallback then
-                result = originalCallback(self, p290)
-            end
-
+            if crystalCB then result = crystalCB(self, p290) end
             if self.State then self.State.IsCrystalEquipped = true end
-
             pcall(function()
                 local util = ReplicatedStorage:FindFirstChild("Modules")
                 if util then
                     util = util:FindFirstChild("Util")
-                    if util then
-                        util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true)
-                    end
+                    if util then util:ToggleLockForAbilityIcon("Axe", "JaneDoeCrystalEquipped", true) end
                 end
             end)
-
             local abilityCfg = self.Config.Crystal
-
+            local chargeUI, fillConn, crystalIndicator, indicatorConn
             pcall(function()
                 if abilityCfg.ChargeUI then
                     chargeUI = abilityCfg.ChargeUI:Clone()
-                    local screenGui = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI") or LocalPlayer.PlayerGui:FindFirstChildOfClass("ScreenGui")
-                    if screenGui then
-                        chargeUI.Parent = screenGui
-                    end
-
+                    local sg = LocalPlayer.PlayerGui:FindFirstChild("TemporaryUI") or LocalPlayer.PlayerGui:FindFirstChildOfClass("ScreenGui")
+                    if sg then chargeUI.Parent = sg end
                     local bar = chargeUI:FindFirstChild("Bar", true)
                     if bar then
                         local startTime = tick()
                         fillConn = RunService.Heartbeat:Connect(function()
-                            local progress = math.clamp((tick() - startTime) / holdDuration, 0, 1)
+                            local progress = math.clamp((tick() - startTime) / 2.0, 0, 1)
                             pcall(function()
                                 bar.Size = UDim2.new(progress, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
                                 bar.ImageColor3 = Color3.fromHSV(progress * 0.35, 1, 1)
                                 local txt = bar:FindFirstChild("Percent", true)
                                 if txt then txt.Text = math.floor(progress * 100) .. "%" end
                             end)
-                            if progress >= 1 and fillConn then
-                                fillConn:Disconnect()
-                                fillConn = nil
-                            end
+                            if progress >= 1 and fillConn then fillConn:Disconnect(); fillConn = nil end
                         end)
                     end
                 end
             end)
-
             pcall(function()
                 if self.Behavior and self.Behavior.lcl_createCrystalIndicator then
                     crystalIndicator = self.Behavior:lcl_createCrystalIndicator(self)
                 end
             end)
-
             if S.crystalPitchAimbot and crystalIndicator then
                 indicatorConn = RunService.Heartbeat:Connect(function()
                     if not self.State or not self.State.IsCrystalEquipped then
-                        if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-                        return
+                        if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end; return
                     end
                     local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
                     if myHRP then
                         local killer = getNearestKillerForCrystal(myHRP.Position)
-                        if killer then
-                            updateBeam(crystalIndicator, myHRP, killer, abilityCfg)
-                        end
+                        if killer then updateBeam(crystalIndicator, myHRP, killer, abilityCfg) end
                     end
                 end)
             end
-
             task.spawn(function()
-                task.wait(holdDuration)
-
+                task.wait(2.0)
                 if fillConn then fillConn:Disconnect(); fillConn = nil end
                 if chargeUI then pcall(function() chargeUI:Destroy() end); chargeUI = nil end
                 if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-
                 pcall(function()
                     if self.Instances and self.Instances.CrystalIndicator then
                         for _, p in self.Instances.CrystalIndicator do
@@ -1129,48 +1073,47 @@ do
                         self.Instances.CrystalIndicator = nil
                     end
                 end)
-
-                if not (self.State and self.State.IsCrystalEquipped and S.crystalPitchEnabled) then
-                    return
+                if not (self.State and self.State.IsCrystalEquipped and S.crystalPitchEnabled) then return end
+                local function doFire()
+                    fireCrystalAbility(self)
                 end
-
-                local function fireAbilityFn()
-                    fireCrystalAbility(self, self.Player and self.Player.Name)
-                end
-
                 if S.crystalPitchAimbot then
                     local myHRP = self.Rig and self.Rig:FindFirstChild("HumanoidRootPart")
                     local killer = myHRP and getNearestKillerForCrystal(myHRP.Position)
                     if killer then
-                        doAimAndFire(myHRP, killer, fireAbilityFn, abilityCfg)
+                        doAimAndFire(myHRP, killer, doFire, abilityCfg)
                     else
-                        fireAbilityFn()
+                        doFire()
                     end
                 else
-                    fireAbilityFn()
+                    doFire()
                 end
             end)
-
             return result
         end
-
-        crystalPatched = true
-        pcall(function()
-            WindUI:Notify({Title="Crystal Pitch", Content="Patched successfully", Icon="sparkles", Duration=3})
-        end)
+        patched = true
+        pcall(function() WindUI:Notify({Title="Crystal Pitch", Content="Patched!", Icon="sparkles", Duration=3}) end)
     end
 
     function CrystalPitch.unpatch()
-        if not crystalPatched then return end
-        if actorAbilities and actorAbilities.Crystal and originalCallback then
-            actorAbilities.Crystal.Callback = originalCallback
+        if not patched then return end
+        local networkMod = ReplicatedStorage:FindFirstChild("Modules")
+        if not networkMod then return end
+        local actorsMod = networkMod:FindFirstChild("Actors")
+        if not actorsMod then return end
+        local ok, actors = pcall(require, actorsMod)
+        if not ok or not actors then return end
+        local actor
+        if actors.CurrentActors then
+            for _, a in ipairs(actors.CurrentActors) do
+                if a.Player == LocalPlayer then actor = a; break end
+            end
         end
-        if indicatorConn then indicatorConn:Disconnect(); indicatorConn = nil end
-        if fillConn then fillConn:Disconnect(); fillConn = nil end
-        if chargeUI then pcall(function() chargeUI:Destroy() end); chargeUI = nil end
-        crystalPatched = false
-        originalCallback = nil
-        actorAbilities = nil
+        if actor and actor.Behavior and actor.Behavior.Abilities and actor.Behavior.Abilities.Crystal and crystalCB then
+            actor.Behavior.Abilities.Crystal.Callback = crystalCB
+        end
+        crystalCB = nil
+        patched = false
         killerMotionData = {}
     end
 
@@ -1180,80 +1123,151 @@ do
 end
 
 -- ==================== ELLIOT AIMBOT MODULE ====================
+-- Source: Elliot Script Enhanced Edition (integrated)
 local ElliotAimbot = {}
 do
-    local renderConnection = nil
-    local autoRotateBackup = nil
-    local elliotHumanoid = nil
-    local elliotRootPart = nil
-    local isThrowing = false
-    local throwTimestamp = 0
+    local renderConnection  = nil
+    local autoRotateBackup  = nil
+    local elliotHumanoid    = nil
+    local elliotRootPart    = nil
+    local isThrowing        = false
+    local throwTimestamp    = 0
     local elliotRemoteEvent = nil
 
+    -- Pizza arc visualization
+    local showArc     = false
+    local arcFolder   = nil
+    local arcParts    = {}
+    local arcSegments = 50
+    local pizzaThrowForce     = 80
+    local pizzaUpwardComponent = 0.5
+    local pizzaGravity        = 196.2
+
     local function setupElliotCharacter(character)
-        elliotHumanoid = character:FindFirstChildOfClass("Humanoid")
-        elliotRootPart = character:FindFirstChild("HumanoidRootPart")
+        elliotHumanoid   = character:WaitForChild("Humanoid", 5)
+        elliotRootPart   = character:WaitForChild("HumanoidRootPart", 5)
+    end
+
+    local function clearArc()
+        for _, p in ipairs(arcParts) do
+            if p and p.Parent then p:Destroy() end
+        end
+        arcParts = {}
+    end
+
+    local function createArcFolder()
+        if arcFolder then arcFolder:Destroy() end
+        arcFolder = Instance.new("Folder")
+        arcFolder.Name = "PizzaArcVisualizer"
+        arcFolder.Parent = Workspace
+    end
+
+    local function createArcSegment(position, index)
+        local part = Instance.new("Part")
+        part.Name        = "ArcSegment_" .. index
+        part.Size        = Vector3.new(0.25, 0.25, 0.25)
+        part.Position    = position
+        part.Anchored    = true
+        part.CanCollide  = false
+        part.Material    = Enum.Material.Neon
+        part.Shape       = Enum.PartType.Ball
+        part.Color       = Color3.fromRGB(255, 0, 0)
+        part.Transparency = 0.15
+        part.Parent      = arcFolder
+        return part
+    end
+
+    local function calculateArcPoints(startPos, lookVector)
+        local throwDir       = (lookVector + Vector3.new(0, pizzaUpwardComponent, 0)).Unit
+        local initialVelocity = throwDir * pizzaThrowForce
+        local maxTime        = 3
+        local timeStep       = maxTime / arcSegments
+        local points         = {}
+        local lastPos        = startPos
+        local rayParams      = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {LocalPlayer.Character, arcFolder}
+        for i = 0, arcSegments do
+            local t   = i * timeStep
+            local pos = startPos + initialVelocity * t + Vector3.new(0, -0.5 * pizzaGravity * t * t, 0)
+            if i > 0 then
+                local dir  = pos - lastPos
+                local dist = dir.Magnitude
+                if dist > 0 then
+                    local hit = Workspace:Raycast(lastPos, dir.Unit * dist, rayParams)
+                    if hit then table.insert(points, hit.Position); break end
+                end
+            end
+            if pos.Y < -100 then break end
+            table.insert(points, pos)
+            lastPos = pos
+        end
+        return points
+    end
+
+    local function updateArcVisualization()
+        if not showArc or not elliotRootPart then clearArc(); return end
+        local character = LocalPlayer.Character
+        local leftArm   = character and (character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftHand") or character:FindFirstChild("LeftLowerArm"))
+        local startPos  = leftArm and leftArm.Position or (elliotRootPart.Position + Vector3.new(-1, 1, 0) + elliotRootPart.CFrame.LookVector * 2)
+        local arcPoints = calculateArcPoints(startPos, elliotRootPart.CFrame.LookVector)
+        clearArc()
+        for i, point in ipairs(arcPoints) do
+            local part = createArcSegment(point, i)
+            if i == #arcPoints and #arcPoints > 1 then
+                part.Size         = Vector3.new(0.5, 0.5, 0.5)
+                part.Color        = Color3.fromRGB(255, 255, 0)
+                part.Transparency = 0
+            end
+            table.insert(arcParts, part)
+        end
     end
 
     local function findElliotTarget()
         local survivorsFolder = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Survivors")
-        if not survivorsFolder then
-            survivorsFolder = Workspace:FindFirstChild("Survivors")
-            if not survivorsFolder then return nil end
-        end
-        if not elliotRootPart then return nil end
-
+        if not survivorsFolder then survivorsFolder = Workspace:FindFirstChild("Survivors") end
+        if not survivorsFolder or not elliotRootPart then return nil end
         local target, lowestHealth = nil, math.huge
         local closestTarget, closestDistance = nil, math.huge
-
         for _, survivor in ipairs(survivorsFolder:GetChildren()) do
             if survivor ~= LocalPlayer.Character then
-                local hum = survivor:FindFirstChildOfClass("Humanoid")
+                local hum  = survivor:FindFirstChildOfClass("Humanoid")
                 local root = survivor:FindFirstChild("HumanoidRootPart")
                 if hum and root and hum.Health > 0 then
                     if hum.Health < lowestHealth then
-                        target = root
+                        target      = root
                         lowestHealth = hum.Health
                     end
-                    local distance = (root.Position - elliotRootPart.Position).Magnitude
-                    if distance < closestDistance then
-                        closestTarget = root
-                        closestDistance = distance
+                    local dist = (root.Position - elliotRootPart.Position).Magnitude
+                    if dist < closestDistance then
+                        closestTarget   = root
+                        closestDistance = dist
                     end
                 end
             end
         end
-
         return target or closestTarget
     end
 
     local function aimAtElliotTarget(target)
         if not target or not target.Parent then return end
-
-        local velocity = target.AssemblyLinearVelocity
-        local position = target.Position
-        local lookVector = target.CFrame.LookVector
+        local velocity     = target.AssemblyLinearVelocity
+        local position     = target.Position
+        local lookVector   = target.CFrame.LookVector
         local predictedPos = position + (lookVector * 2)
-        local isMovingFast = velocity.Magnitude > S.elliotVelocityThreshold
-
-        if isMovingFast then
-            local velocityUnit = velocity.Unit
-            predictedPos = predictedPos + (velocityUnit * S.elliotPrediction)
+        if velocity.Magnitude > S.elliotVelocityThreshold then
+            predictedPos = predictedPos + velocity.Unit * S.elliotPrediction
         end
-
         if elliotRootPart and elliotHumanoid then
-            if not autoRotateBackup then
-                autoRotateBackup = elliotHumanoid.AutoRotate
-            end
+            if not autoRotateBackup then autoRotateBackup = elliotHumanoid.AutoRotate end
             elliotHumanoid.AutoRotate = false
             elliotRootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-
-            local direction = (predictedPos - elliotRootPart.Position)
-            local directionFlat = Vector3.new(direction.X, 0, direction.Z).Unit
-            local targetCFrame = CFrame.new(elliotRootPart.Position, elliotRootPart.Position + directionFlat)
-            local currentCFrame = elliotRootPart.CFrame
-            local newCFrame = currentCFrame:Lerp(targetCFrame, 0.35)
-            elliotRootPart.CFrame = CFrame.new(currentCFrame.Position) * (newCFrame - newCFrame.Position)
+            local direction    = (predictedPos - elliotRootPart.Position)
+            local dirFlat      = Vector3.new(direction.X, 0, direction.Z).Unit
+            local targetCF     = CFrame.new(elliotRootPart.Position, elliotRootPart.Position + dirFlat)
+            local currentCF    = elliotRootPart.CFrame
+            local newCF        = currentCF:Lerp(targetCF, 0.35)
+            elliotRootPart.CFrame = CFrame.new(currentCF.Position) * (newCF - newCF.Position)
         end
     end
 
@@ -1266,30 +1280,21 @@ do
                     elliotRemoteEvent = elliotRemoteEvent:FindFirstChild("RemoteEvent")
                 end
             end
-
-            if not elliotRemoteEvent then
-                elliotRemoteEvent = testRemote
-            end
-
+            if not elliotRemoteEvent then elliotRemoteEvent = testRemote end
             if elliotRemoteEvent then
                 local oldNamecall
                 oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
                     local method = getnamecallmethod()
-                    local args = {...}
-
+                    local args   = {...}
                     if method == "FireServer" and self == elliotRemoteEvent then
                         if args[1] == "UseActorAbility" and args[2] and args[2][1] then
-                            local bufferData = args[2][1]
-                            local success, bufferString = pcall(function()
-                                return buffer.tostring(bufferData)
-                            end)
-                            if success and bufferString and string.find(bufferString, "ThrowPizza") then
-                                isThrowing = true
+                            local ok, bufStr = pcall(function() return buffer.tostring(args[2][1]) end)
+                            if ok and bufStr and string.find(bufStr, "ThrowPizza") then
+                                isThrowing     = true
                                 throwTimestamp = tick()
                             end
                         end
                     end
-
                     return oldNamecall(self, ...)
                 end)
             end
@@ -1297,34 +1302,19 @@ do
     end
 
     function ElliotAimbot.start()
-        if renderConnection then
-            renderConnection:Disconnect()
-            renderConnection = nil
-        end
-
+        if renderConnection then renderConnection:Disconnect(); renderConnection = nil end
         setupElliotThrowDetection()
-
         renderConnection = RunService.RenderStepped:Connect(function()
             if not S.elliotAimbotEnabled then return end
-
             if not elliotHumanoid or not elliotRootPart then
-                if LocalPlayer.Character then
-                    setupElliotCharacter(LocalPlayer.Character)
-                end
+                if LocalPlayer.Character then setupElliotCharacter(LocalPlayer.Character) end
                 return
             end
-
             if isThrowing and (tick() - throwTimestamp) > S.elliotAimDuration then
                 isThrowing = false
             end
-
-            local shouldAim = false
-            if S.elliotRequireAnimation then
-                shouldAim = isThrowing
-            else
-                shouldAim = true
-            end
-
+            if showArc then updateArcVisualization() end
+            local shouldAim = S.elliotRequireAnimation and isThrowing or (not S.elliotRequireAnimation)
             if not shouldAim then
                 if autoRotateBackup ~= nil then
                     elliotHumanoid.AutoRotate = autoRotateBackup
@@ -1332,7 +1322,6 @@ do
                 end
                 return
             end
-
             local target = findElliotTarget()
             if not target then
                 if autoRotateBackup ~= nil then
@@ -1341,21 +1330,18 @@ do
                 end
                 return
             end
-
             aimAtElliotTarget(target)
         end)
     end
 
     function ElliotAimbot.stop()
-        if renderConnection then
-            renderConnection:Disconnect()
-            renderConnection = nil
-        end
+        if renderConnection then renderConnection:Disconnect(); renderConnection = nil end
         if autoRotateBackup ~= nil and elliotHumanoid then
             elliotHumanoid.AutoRotate = autoRotateBackup
             autoRotateBackup = nil
         end
         isThrowing = false
+        clearArc()
     end
 
     function ElliotAimbot.cleanup()
@@ -1367,6 +1353,14 @@ do
     function ElliotAimbot.setupElliotCharacter(character)
         setupElliotCharacter(character)
     end
+
+    function ElliotAimbot.setShowArc(v)
+        showArc = v
+        if v then createArcFolder() else clearArc(); if arcFolder then arcFolder:Destroy(); arcFolder = nil end end
+    end
+
+    function ElliotAimbot.setArcSegments(v) arcSegments = v end
+    function ElliotAimbot.setPizzaForce(v)  pizzaThrowForce = v end
 end
 
 -- ==================== CHAT LOGGER WITH INPUT ====================
@@ -3191,34 +3185,26 @@ end
 do
     local tab = Tabs.Combat
     pcall(function()
-        local sCrystal = tab:Section({Title="Crystal Pitch", Opened=true})
+        local sCrystal = tab:Section({Title="Crystal Pitch (Jane Doe)", Opened=true})
         sCrystal:Toggle({Title="Enable Crystal Pitch", Value=S.crystalPitchEnabled, Callback=function(v)
-            pcall(function()
-                S.crystalPitchEnabled = v
-                set("crystalPitchEnabled", v)
-                if v then tryApplyCrystalPatch() else CrystalPitch.unpatch() end
-            end)
+            S.crystalPitchEnabled = v; set("crystalPitchEnabled", v)
+            if v then
+                if waitForModules() then CrystalPitch.patch() end
+            else
+                CrystalPitch.unpatch()
+            end
         end})
         sCrystal:Toggle({Title="Auto-Aim to Head", Value=S.crystalPitchAimbot, Callback=function(v)
-            pcall(function()
-                S.crystalPitchAimbot = v
-                set("crystalPitchAimbot", v)
-                if S.crystalPitchEnabled then
-                    CrystalPitch.unpatch(); task.wait(0.1); tryApplyCrystalPatch()
-                end
-            end)
+            S.crystalPitchAimbot = v; set("crystalPitchAimbot", v)
+            if S.crystalPitchEnabled then CrystalPitch.unpatch(); task.wait(0.1); if waitForModules() then CrystalPitch.patch() end end
         end})
         sCrystal:Slider({Title="Prediction Time", Value={Min=0, Max=2, Default=S.crystalPrediction}, Step=0.01, Callback=function(v)
-            pcall(function()
-                S.crystalPrediction = tonumber(v) or 0.6
-                set("crystalPrediction", S.crystalPrediction)
-            end)
+            S.crystalPrediction = tonumber(v) or 0.6; set("crystalPrediction", S.crystalPrediction)
         end})
         sCrystal:Button({Title="Manual Repatch", Callback=function()
-            pcall(function()
-                CrystalPitch.unpatch(); task.wait(0.2); tryApplyCrystalPatch()
-                WindUI:Notify({Title="Crystal Pitch", Content="Repatched!", Icon="refresh-cw", Duration=2})
-            end)
+            CrystalPitch.unpatch(); task.wait(0.2)
+            if waitForModules() then CrystalPitch.patch() end
+            WindUI:Notify({Title="Crystal Pitch", Content="Repatched!", Icon="refresh-cw", Duration=2})
         end})
     end)
 end
@@ -3230,72 +3216,56 @@ do
         local sElliot = tab:Section({Title="Elliot Aimbot", Opened=true})
 
         sElliot:Toggle({Title="Elliot Aimbot", Value=S.elliotAimbotEnabled, Callback=function(v)
-            pcall(function()
-                S.elliotAimbotEnabled = v
-                set("elliotAimbotEnabled", v)
-                if v then
-                    ElliotAimbot.start()
-                    WindUI:Notify({Title="Elliot Aimbot", Content="Enabled!", Icon="pizza", Duration=2})
-                else
-                    ElliotAimbot.stop()
-                    WindUI:Notify({Title="Elliot Aimbot", Content="Disabled", Icon="pizza", Duration=2})
-                end
-            end)
+            S.elliotAimbotEnabled = v; set("elliotAimbotEnabled", v)
+            if v then ElliotAimbot.start(); WindUI:Notify({Title="Elliot Aimbot", Content="Enabled!", Icon="pizza", Duration=2})
+            else ElliotAimbot.stop(); WindUI:Notify({Title="Elliot Aimbot", Content="Disabled", Icon="pizza", Duration=2}) end
         end})
 
         sElliot:Toggle({Title="Require Throw Animation", Value=S.elliotRequireAnimation, Callback=function(v)
-            pcall(function()
-                S.elliotRequireAnimation = v
-                set("elliotRequireAnimation", v)
-            end)
+            S.elliotRequireAnimation = v; set("elliotRequireAnimation", v)
         end})
 
         sElliot:Slider({Title="Prediction Studs", Value={Min=0, Max=50, Default=S.elliotPrediction}, Step=1, Callback=function(v)
-            pcall(function()
-                S.elliotPrediction = tonumber(v) or 5
-                set("elliotPrediction", S.elliotPrediction)
-            end)
+            S.elliotPrediction = tonumber(v) or 5; set("elliotPrediction", S.elliotPrediction)
         end})
 
         sElliot:Slider({Title="Velocity Threshold", Value={Min=0, Max=50, Default=S.elliotVelocityThreshold}, Step=1, Callback=function(v)
-            pcall(function()
-                S.elliotVelocityThreshold = tonumber(v) or 16
-                set("elliotVelocityThreshold", S.elliotVelocityThreshold)
-            end)
+            S.elliotVelocityThreshold = tonumber(v) or 16; set("elliotVelocityThreshold", S.elliotVelocityThreshold)
         end})
 
         sElliot:Slider({Title="Aim Duration (seconds)", Value={Min=0.1, Max=2, Default=S.elliotAimDuration}, Step=0.1, Callback=function(v)
-            pcall(function()
-                S.elliotAimDuration = tonumber(v) or 0.5
-                set("elliotAimDuration", S.elliotAimDuration)
-            end)
+            S.elliotAimDuration = tonumber(v) or 0.5; set("elliotAimDuration", S.elliotAimDuration)
         end})
 
-        local pingDisplay = sElliot:Paragraph({
-            Title = "Network Ping",
-            Description = "Calculating..."
-        })
+        sElliot:Slider({Title="Pizza Throw Force", Value={Min=50, Max=150, Default=80}, Step=5, Callback=function(v)
+            ElliotAimbot.setPizzaForce(v)
+        end})
 
+        sElliot:Slider({Title="Arc Segments", Value={Min=20, Max=100, Default=50}, Step=5, Callback=function(v)
+            ElliotAimbot.setArcSegments(v)
+        end})
+
+        sElliot:Toggle({Title="Show Pizza Arc", Value=false, Callback=function(v)
+            ElliotAimbot.setShowArc(v)
+            WindUI:Notify({Title="Pizza Arc", Content=v and "Enabled!" or "Disabled", Duration=2})
+        end})
+
+        local pingDisplay = sElliot:Paragraph({Title="Network Ping", Description="Calculating..."})
         task.spawn(function()
             while task.wait(1) do
                 pcall(function()
-                    local pingMs = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-                    pingDisplay:Set({
-                        Title = "Network Ping",
-                        Description = string.format("%.0f ms", pingMs)
-                    })
+                    local pingMs = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+                    pingDisplay:Set({Title="Network Ping", Description=string.format("%.0f ms", pingMs)})
                 end)
             end
         end)
 
         sElliot:Divider()
         sElliot:Button({Title="Manual Rescan", Callback=function()
-            pcall(function()
-                if S.elliotAimbotEnabled then
-                    ElliotAimbot.stop(); task.wait(0.2); ElliotAimbot.start()
-                    WindUI:Notify({Title="Elliot Aimbot", Content="Rescanned!", Icon="refresh-cw", Duration=2})
-                end
-            end)
+            if S.elliotAimbotEnabled then
+                ElliotAimbot.stop(); task.wait(0.2); ElliotAimbot.start()
+                WindUI:Notify({Title="Elliot Aimbot", Content="Rescanned!", Icon="refresh-cw", Duration=2})
+            end
         end})
     end)
 end

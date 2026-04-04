@@ -1376,7 +1376,6 @@ do
         end
     end })
 
-    secSurvivors:Button({ Title="Veeronica", Locked=true, Callback=function() end })
 end
 
 ------------------------------------------------------------------------
@@ -1729,6 +1728,131 @@ do
     bsSection:Slider({ Title="Behind Distance", Step=0.5, Value={Min=0.5,Max=10,Default=BS_BEHIND_DISTANCE}, Callback=function(v) BS_BEHIND_DISTANCE=v end })
     bsSection:Slider({ Title="Remote Fire Delay (s)", Step=0.01, Value={Min=0.00,Max=0.50,Default=BS_REMOTE_FIRE_DELAY}, Callback=function(v) BS_REMOTE_FIRE_DELAY=v end })
     bsSection:Slider({ Title="Aim Snap Delay (s)", Step=0.01, Value={Min=0.00,Max=0.25,Default=BS_AIM_SNAP_DELAY}, Callback=function(v) BS_AIM_SNAP_DELAY=v end })
+end
+
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- TAB: AUTO TRICK (Veeronica)
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+local tabAutoTrick = win:Tab({ Title = "Auto Trick", Icon = "zap" })
+local secAutoTrick = tabAutoTrick:Section({ Title = "Veeronica Auto Trick", Opened = true })
+
+do
+    local atEnabled = false
+    local atActiveMonitors = {}
+    local atDescendantAddedConn = nil
+
+    local function atGetBehaviorFolder()
+        return svc.RS:WaitForChild("Assets")
+            :WaitForChild("Survivors")
+            :WaitForChild("Veeronica")
+            :WaitForChild("Behavior")
+    end
+
+    local function atGetSprintingButton()
+        return lp.PlayerGui:WaitForChild("MainUI"):WaitForChild("SprintingButton")
+    end
+
+    local atBehaviorFolder = nil
+    task.spawn(function()
+        local ok, f = pcall(atGetBehaviorFolder)
+        if ok and f then atBehaviorFolder = f end
+    end)
+
+    local function atSafeConnectPropertyChanged(instance, prop, fn)
+        local ok, signal = pcall(function() return instance:GetPropertyChangedSignal(prop) end)
+        if ok and signal then return signal:Connect(fn) end
+        return nil
+    end
+
+    local function atMonitorHighlight(h)
+        if not h or atActiveMonitors[h] then return end
+        local connections = {}
+        local prevState = false
+
+        local function cleanup()
+            for _, conn in ipairs(connections) do
+                if conn and conn.Connected then conn:Disconnect() end
+            end
+            atActiveMonitors[h] = nil
+        end
+
+        local function adorneeIsPlayer(hh)
+            if not hh then return false end
+            local adornee = hh.Adornee
+            local char = lp.Character
+            if not adornee or not char then return false end
+            return adornee == char or adornee:IsDescendantOf(char)
+        end
+
+        local function onChanged()
+            if not atEnabled then return end
+            if not h or not h.Parent then cleanup(); return end
+            local currState = adorneeIsPlayer(h)
+            if prevState ~= currState then
+                if currState then
+                    local ok2, btn = pcall(atGetSprintingButton)
+                    if ok2 and btn then
+                        for _, v in pairs(getconnections(btn.MouseButton1Down)) do
+                            pcall(function() v:Fire() end)
+                            pcall(function() if v.Function then v:Function() end end)
+                        end
+                    end
+                end
+            end
+            prevState = currState
+        end
+
+        local c = atSafeConnectPropertyChanged(h, "Adornee", onChanged)
+        if c then table.insert(connections, c) end
+        table.insert(connections, h.AncestryChanged:Connect(function(_, parent)
+            if not parent then cleanup() else onChanged() end
+        end))
+        table.insert(connections, lp.CharacterAdded:Connect(onChanged))
+        table.insert(connections, lp.CharacterRemoving:Connect(onChanged))
+        atActiveMonitors[h] = cleanup
+        task.spawn(onChanged)
+    end
+
+    local function atStartManager()
+        if atDescendantAddedConn or not atBehaviorFolder then return end
+        for _, desc in ipairs(atBehaviorFolder:GetDescendants()) do
+            if desc:IsA("Highlight") then atMonitorHighlight(desc) end
+        end
+        atDescendantAddedConn = atBehaviorFolder.DescendantAdded:Connect(function(child)
+            if child:IsA("Highlight") then atMonitorHighlight(child) end
+        end)
+    end
+
+    local function atStopManager()
+        if atDescendantAddedConn and atDescendantAddedConn.Connected then
+            atDescendantAddedConn:Disconnect()
+        end
+        atDescendantAddedConn = nil
+        local cleans = {}
+        for _, cleanup in pairs(atActiveMonitors) do
+            if type(cleanup) == "function" then table.insert(cleans, cleanup) end
+        end
+        for _, fn in ipairs(cleans) do pcall(fn) end
+        atActiveMonitors = {}
+    end
+
+    secAutoTrick:Toggle({
+        Title = "Auto Trick", Type = "Checkbox", Default = false,
+        Callback = function(on)
+            atEnabled = on
+            if on then
+                if not atBehaviorFolder then
+                    local ok, f = pcall(atGetBehaviorFolder)
+                    if ok and f then atBehaviorFolder = f end
+                end
+                atStartManager()
+            else
+                atStopManager()
+            end
+        end
+    })
 end
 
 ------------------------------------------------------------------------
